@@ -1,0 +1,51 @@
+--- a/crates/gliff/src/main.rs
++++ b/crates/gliff/src/main.rs
+@@ -97,6 +97,9 @@
+     /// it on and off, and the window remembers the choice.
+     #[arg(long)]
+     no_audio: bool,
++    /// Window title supplied by an application that embeds the Gliff viewer.
++    #[arg(long)]
++    window_title: Option<String>,
+ }
+ 
+ /// The launcher chord ships on for macOS — on Linux the real super keys
+@@ -381,12 +384,12 @@
+ fn build_ui(app: &adw::Application, cli: &Cli) {
+     let window = adw::ApplicationWindow::builder()
+         .application(app)
+-        .title("Gliff")
++        .title(cli.window_title.as_deref().unwrap_or("Gliff"))
+         .default_width(1280)
+         .default_height(760)
+         .build();
+ 
+     let header = adw::HeaderBar::builder()
+-        .show_title(false)
++        .show_title(cli.window_title.is_some())
+         // On Linux closing is the compositor's job, and a stray click on an
+         // X in the middle of a remote session is a bad surprise. A macOS
+@@ -1396,7 +1399,12 @@
+             save_config(ui, &config);
+         }
+     }
+-    ui.window.set_title(Some(&window_title(&s.endpoint)));
++    let title = ui
++        .cli
++        .window_title
++        .clone()
++        .unwrap_or_else(|| window_title(&s.endpoint));
++    ui.window.set_title(Some(&title));
+     show_status(ui, &s.status.borrow());
+     ui.stats.set_text(&s.stats.borrow());
+     #[cfg(target_os = "macos")]
+@@ -1430,7 +1438,8 @@
+     release_pressed_keys(ui);
+     let previous = ui.active.take();
+     revoke_local_offer(previous.as_ref(), ui.cli.no_clipboard);
+-    ui.window.set_title(Some("Gliff"));
++    ui.window
++        .set_title(Some(ui.cli.window_title.as_deref().unwrap_or("Gliff")));
+     show_status(ui, "Not connected");
+     ui.stats.set_text("");
+     ui.frame.clear();

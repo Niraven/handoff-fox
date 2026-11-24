@@ -1,0 +1,6 @@
+{
+  "upstream": "https://github.com/r-c-f/waynergy",
+  "release": "v0.0.17",
+  "commit": "7f014dfdc0598e0148de069516607fbc492148ed",
+  "patch": "waynergy-macos-keymap.patch"
+}

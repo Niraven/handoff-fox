@@ -1,0 +1,12 @@
+{
+  "upstream": "https://github.com/teomurgi/mac-gliff",
+  "release": "v0.4.0",
+  "arch": "arm64",
+  "asset": "gliff-0.4.0-arm64.dmg",
+  "sha256": "2fc8bb7c5fe35b5a958aa4e4d8d1484202ef1eda7a6923aa837a9f82eaff583e",
+  "sourceSha256": "3cd34bed5bd4db377d38b193aa0122999a3844d62448ac284ecd787dfe2506be",
+  "windowPatch": "mac-gliff-window-title.patch",
+  "bundleId": "io.github.teomurgi.mac-gliff",
+  "teamId": "NRV7Y84439",
+  "testedServer": "0.4.2"
+}

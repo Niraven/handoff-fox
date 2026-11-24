@@ -1,0 +1,251 @@
+diff --git a/README.md b/README.md
+index 3a23134..81a29d8 100644
+--- a/README.md
++++ b/README.md
+@@ -214,6 +214,13 @@ on my own systems) in `doc/xkb/keycodes/win`.
+ The same issue of keycodes applies here; see `doc/xkb/keycodes/mac` for
+ a usable configuration.
+ 
++When the primary is Deskflow on macOS and the client uses the Wayland `wlr`
++backend, set `macos_keymap = true` to translate Mac physical key positions to
++the active compositor layout. Leave `syn_raw_key_codes` enabled and keep
++`wl_keyboard_map = true` to use the compositor's layout. Existing explicit
++`[raw-keymap]` entries still apply after the preset. Unmapped positions in
++the preset are ignored.
++
+ ###### Generating custom keycode sections
+ 
+ If everything is still broken, using `waynergy-mapper -x $NAME` will generate
+diff --git a/meson.build b/meson.build
+index 56f3db6..9068267 100644
+--- a/meson.build
++++ b/meson.build
+@@ -9,6 +9,7 @@ src_c = files(
+   'src/wl_idle_kde.c',
+   'src/wl_idle_ext.c',
+   'src/wl_input.c',
++  'src/macos_keymap.c',
+   'src/wl_input_wlr.c',
+   'src/wl_input_kde.c',
+   'src/wl_input_uinput.c',
+@@ -40,6 +41,14 @@ endif
+ subdir('protocol')
+ subdir('include')
+ 
++macos_keymap_test = executable(
++  'test-macos-keymap',
++  ['test/macos_keymap.c', 'src/macos_keymap.c'],
++  dependencies: xkbcommon,
++  include_directories: include_directories('include'),
++)
++test('macos-keymap', macos_keymap_test)
++
+ executable(
+   'waynergy', 
+   src_c, 
+diff --git a/src/wl_input.c b/src/wl_input.c
+index 8a245a6..cae9944 100644
+--- a/src/wl_input.c
++++ b/src/wl_input.c
+@@ -3,6 +3,7 @@
+ #include <stdbool.h>
+ #include "log.h"
+ #include "fdio_full.h"
++#include "macos_keymap.h"
+ #include <xkbcommon/xkbcommon.h>
+ 
+ 
+@@ -94,6 +95,8 @@ static void load_raw_keymap(struct wlContext *ctx)
+ 	for (i = 0; i < ctx->input.key_count; ++i) {
+ 		ctx->input.raw_keymap[i] = i + offset;
+ 	}
++	if (configTryBool("macos_keymap", false) && configTryBool("syn_raw_key_codes", true))
++		fill_macos_keymap(ctx->input.xkb_map, ctx->input.raw_keymap, ctx->input.key_count);
+ 	/* and second pass -- store any actually mappings, apply offset */
+ 	offset_on_explicit = configTryBool("raw-keymap/offset_on_explicit", true);
+ 	for (i = 0; i < count; ++i) {
+diff --git a/include/macos_keymap.h b/include/macos_keymap.h
+new file mode 100644
+index 0000000..e73a5e4
+--- /dev/null
++++ b/include/macos_keymap.h
+@@ -0,0 +1,9 @@
++#ifndef WAYNERGY_MACOS_KEYMAP_H
++#define WAYNERGY_MACOS_KEYMAP_H
++
++#include <stddef.h>
++#include <xkbcommon/xkbcommon.h>
++
++void fill_macos_keymap(struct xkb_keymap *keymap, int *buttons, size_t count);
++
++#endif
+diff --git a/src/macos_keymap.c b/src/macos_keymap.c
+new file mode 100644
+index 0000000..bb565d2
+--- /dev/null
++++ b/src/macos_keymap.c
+@@ -0,0 +1,125 @@
++#include "macos_keymap.h"
++
++/* The names come from doc/xkb/keycodes/mac. Those codes add seven to
++ * Deskflow's on-wire Mac button number. Use the receiving keymap's names
++ * to keep its layout and modifier assignments. */
++static const struct {
++	size_t button;
++	const char *position;
++} macos_buttons[] = {
++	{   1, "AC01" },
++	{   2, "AC02" },
++	{   3, "AC03" },
++	{   4, "AC04" },
++	{   5, "AC06" },
++	{   6, "AC05" },
++	{   7, "AB01" },
++	{   8, "AB02" },
++	{   9, "AB03" },
++	{  10, "AB04" },
++	{  12, "AB05" },
++	{  13, "AD01" },
++	{  14, "AD02" },
++	{  15, "AD03" },
++	{  16, "AD04" },
++	{  17, "AD06" },
++	{  18, "AD05" },
++	{  19, "AE01" },
++	{  20, "AE02" },
++	{  21, "AE03" },
++	{  22, "AE04" },
++	{  23, "AE06" },
++	{  24, "AE05" },
++	{  25, "AE12" },
++	{  26, "AE09" },
++	{  27, "AE07" },
++	{  28, "AE11" },
++	{  29, "AE08" },
++	{  30, "AE10" },
++	{  31, "AD12" },
++	{  32, "AD09" },
++	{  33, "AD07" },
++	{  34, "AD11" },
++	{  35, "AD08" },
++	{  36, "AD10" },
++	{  37, "RTRN" },
++	{  38, "AC09" },
++	{  39, "AC07" },
++	{  40, "AC11" },
++	{  41, "AC08" },
++	{  42, "AC10" },
++	{  43, "BKSL" },
++	{  44, "AB08" },
++	{  45, "AB10" },
++	{  46, "AB06" },
++	{  47, "AB07" },
++	{  48, "AB09" },
++	{  49, "TAB" },
++	{  50, "SPCE" },
++	{  51, "TLDE" },
++	{  52, "BKSP" },
++	{  54, "ESC" },
++	{  56, "LWIN" },
++	{  57, "LFSH" },
++	{  58, "CAPS" },
++	{  59, "LALT" },
++	{  60, "LCTL" },
++	{  66, "KPDL" },
++	{  68, "KPMU" },
++	{  70, "KPAD" },
++	{  72, "NMLK" },
++	{  76, "KPDV" },
++	{  77, "KPEN" },
++	{  79, "KPSU" },
++	{  83, "KP0" },
++	{  84, "KP1" },
++	{  85, "KP2" },
++	{  86, "KP3" },
++	{  87, "KP4" },
++	{  88, "KP5" },
++	{  89, "KP6" },
++	{  90, "KP7" },
++	{  92, "KP8" },
++	{  93, "KP9" },
++	{  97, "FK05" },
++	{  98, "FK06" },
++	{  99, "FK07" },
++	{ 100, "FK03" },
++	{ 101, "FK08" },
++	{ 102, "FK09" },
++	{ 104, "FK11" },
++	{ 106, "PRSC" },
++	{ 108, "SCLK" },
++	{ 110, "FK10" },
++	{ 111, "MENU" },
++	{ 112, "FK12" },
++	{ 114, "PAUS" },
++	{ 115, "INS" },
++	{ 116, "HOME" },
++	{ 117, "PGUP" },
++	{ 118, "DELE" },
++	{ 119, "FK04" },
++	{ 120, "END" },
++	{ 121, "FK02" },
++	{ 122, "PGDN" },
++	{ 123, "FK01" },
++	{ 124, "LEFT" },
++	{ 125, "RGHT" },
++	{ 126, "DOWN" },
++	{ 127, "UP" },
++};
++
++void fill_macos_keymap(struct xkb_keymap *keymap, int *buttons, size_t count)
++{
++	for (size_t i = 0; i < count; ++i)
++		buttons[i] = -1;
++
++	for (size_t i = 0; i < sizeof(macos_buttons) / sizeof(macos_buttons[0]); ++i) {
++		size_t button = macos_buttons[i].button;
++		if (button >= count)
++			continue;
++		xkb_keycode_t code = xkb_keymap_key_by_name(keymap, macos_buttons[i].position);
++		if (code != XKB_KEYCODE_INVALID)
++			buttons[button] = (int)code;
++	}
++}
+diff --git a/test/macos_keymap.c b/test/macos_keymap.c
+new file mode 100644
+index 0000000..e862d85
+--- /dev/null
++++ b/test/macos_keymap.c
+@@ -0,0 +1,33 @@
++#include <assert.h>
++#include <xkbcommon/xkbcommon.h>
++#include <xkbcommon/xkbcommon-keysyms.h>
++#include "macos_keymap.h"
++
++int main(void)
++{
++	struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
++	assert(context);
++	struct xkb_rule_names names = { .layout = "us" };
++	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
++	assert(keymap);
++	struct xkb_state *state = xkb_state_new(keymap);
++	assert(state);
++	int buttons[256];
++	fill_macos_keymap(keymap, buttons, sizeof(buttons) / sizeof(buttons[0]));
++	assert(buttons[0] == -1);
++	assert(buttons[255] == -1);
++	assert(xkb_state_key_get_one_sym(state, buttons[1]) == XKB_KEY_a);
++	assert(xkb_state_key_get_one_sym(state, buttons[15]) == XKB_KEY_e);
++	assert(xkb_state_key_get_one_sym(state, buttons[16]) == XKB_KEY_r);
++	assert(xkb_state_key_get_one_sym(state, buttons[45]) == XKB_KEY_slash);
++	assert(xkb_state_key_get_one_sym(state, buttons[54]) == XKB_KEY_Escape);
++	assert(xkb_state_key_get_one_sym(state, buttons[56]) == XKB_KEY_Super_L);
++	assert(xkb_state_key_get_one_sym(state, buttons[59]) == XKB_KEY_Alt_L);
++	xkb_state_update_key(state, buttons[57], XKB_KEY_DOWN);
++	assert(xkb_state_key_get_one_sym(state, buttons[1]) == XKB_KEY_A);
++	assert(xkb_state_key_get_one_sym(state, buttons[45]) == XKB_KEY_question);
++	xkb_state_unref(state);
++	xkb_keymap_unref(keymap);
++	xkb_context_unref(context);
++	return 0;
++}
