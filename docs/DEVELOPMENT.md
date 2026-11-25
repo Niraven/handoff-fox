@@ -11,7 +11,7 @@ The Mac menu uses SwiftUI and AppKit. The Linux tray uses GTK 4 and D-Bus. The v
 
 ## Update upstream components
 
-The viewer builds from a checksum-pinned mac-gliff source release. `dependencies/mac-gliff-window-title.patch` adds the window title switch. Video, input, and reconnect come from upstream.
+The viewer builds from a checksum-pinned mac-gliff source release. `dependencies/mac-gliff-window-title.patch` adds the window title and Actual Size options. Retest both scaling modes and pointer alignment when updating the patch. Video, input, and reconnect come from upstream.
 
 Use `./script/install_mac_gliff.sh --latest` to check for a new release. Review the source, update the source release and checksums in `dependencies/mac-gliff.json`, and package with `./script/build_and_run.sh --package`. The build checks that the patch applies before compiling. Smoke-test Mirror, Private Screen, keyboard and reconnect against the Linux server version before publishing. [mac-gliff releases](https://github.com/teomurgi/mac-gliff/releases) · [Linux Gliff upstream](https://github.com/omacom/gliff)
 
@@ -19,30 +19,48 @@ The optional Waynergy Mac keymap is kept in `dependencies/waynergy-macos-keymap.
 
 ## Optional local tools
 
-- The Mac’s `initialLinuxPeer` preference selects a verified device for incoming handoffs, automatic clipboard, and optional input controls. The input controls use existing Deskflow and Waynergy services.
+- The Mac’s pairing panel selects a verified device for incoming handoffs. Existing setups can use `initialLinuxPeer` for the Deskflow and Waynergy input controls and to migrate their previous incoming device.
 - The Linux tray reads `HANDOFF_FOX_INPUT_UNIT` to select the relevant user systemd unit. Agent tools depend on the corresponding Linux apps being installed.
 - Linux storage listings include home/system storage and a separately mounted `/workspace` when available.
 
 ### Build presets
 
-Add a preset to an existing saved project in `~/.config/desktop-link/projects.json`. The receiver honors `XDG_CONFIG_HOME`. Keep the existing ID and path.
+Add a preset to an existing saved project in `~/.config/desktop-link/projects.json`. The receiver honors `XDG_CONFIG_HOME`. Keep the existing ID and path. Only presets configured by the Linux account owner can be started.
 
 ```json
 {
   "id": "keep-the-existing-id",
   "name": "Example project",
   "path": "/home/you/work/example",
-  "build": ["./ci/build.sh"],
-  "artifact": "build/output.zip"
+  "presets": [
+    {"id": "test", "name": "Test", "argv": ["./ci/test.sh"], "artifact": "build/output.zip"}
+  ]
 }
 ```
 
-The optional artifact stays inside the project and can be up to 2 MiB. The Mac verifies its SHA-256. **Research tools** can also fetch text from a public HTTPS page through the Linux receiver.
+Old `build` settings appear as a **Build** preset. The optional artifact stays inside the project and can be up to 2 MiB. The Mac and CLI verify its SHA-256 before writing it locally. **Research tools** can also fetch text from a public HTTPS page through the Linux receiver.
+
+```sh
+python3 script/handoff-fox-jobs.py user@host projects
+python3 script/handoff-fox-jobs.py user@host start PROJECT_ID test
+python3 script/handoff-fox-jobs.py user@host status JOB_ID
+python3 script/handoff-fox-jobs.py user@host artifact JOB_ID ./result.zip
+```
+
+Use the printed job ID with `start PROJECT_ID test --ticket JOB_ID` when an acknowledgment is lost. Jobs run for up to 15 minutes and stay inspectable across SSH disconnects. If the Linux worker disappears, the job is marked failed and the preset is available to run again. Job records and artifacts live under `${XDG_STATE_HOME:-$HOME/.local/state}/desktop-link/jobs`. The app and CLI show the 50 newest records from this directory. Logs are bounded.
+
+For an optional agent integration, register this as a local stdio command with a verified SSH alias and an absolute script path. Each registration covers one device and exposes device info, saved project names and presets, and job metadata. The Mac app and CLI handle job starts, cancellation, logs, and artifacts. [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+
+```sh
+uv run --with 'mcp>=2,<3' python /absolute/path/to/script/handoff-fox-jobs.py user@host mcp
+```
 
 ## Preview verification
 
 - On Apple Silicon and Omarchy, the installed Mac app opened both a physical mirror and a separate virtual screen over Tailscale. The private screen accepted keyboard input with Shift and punctuation.
-- An isolated SSH interruption recovered in the same Mac viewer window while both laptops stayed awake. Physical sleep and wake remain untested.
+- The updated viewer opened a Citadel private screen in Actual Size and recovered an interrupted SSH connection in the same process. Both laptops stayed awake during verification. Physical sleep and wake remain untested.
 - An isolated receiver test rejected an unknown host key, installed on a verified login, and preserved the existing receiver on repeat pairing.
 - Disposable clipboard and file fixtures passed both clipboard directions and checksum verification for file delivery. The Waynergy patch applied at its pinned revision.
+- The Mac shortcut and the Citadel tray opened their quick panels.
+- Isolated Citadel jobs returned exit status, logs, and a verified artifact across new SSH sessions. The supervisor-loss regression verifies process cleanup and project unlock. An interrupted acknowledgment test kept one copy of a transferred file across app restart.
 - Developer ID and notarization are pending for a public Mac installer.

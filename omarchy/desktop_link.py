@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 
 UNIT = os.environ.get("HANDOFF_FOX_INPUT_UNIT", "citadel-waynergy.service")
 
@@ -137,6 +138,24 @@ def peer_call(*args, payload=None):
     return answer
 
 
+def recent_project_file():
+    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "desktop-link"
+    return state / "gtk-last-project"
+
+
+def remember_project(project_id):
+    path = recent_project_file()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile(dir=path.parent, mode="w", delete=False) as staging:
+        staged = Path(staging.name)
+        try:
+            staging.write(project_id + "\n")
+            staging.flush()
+            os.replace(staged, path)
+        finally:
+            staged.unlink(missing_ok=True)
+
+
 def open_panel(start_hidden, show_handoff=False):
     os.environ.setdefault("GSK_RENDERER", "cairo")
     import gi
@@ -263,13 +282,14 @@ def open_panel(start_hidden, show_handoff=False):
                 palette.present()
                 return
             palette = Gtk.ApplicationWindow(application=application, title="Handoff",
-                                            default_width=400, hide_on_close=True)
+                                            default_width=350, hide_on_close=True)
             palette.set_resizable(False)
             panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
             for side in ("top", "bottom", "start", "end"):
                 getattr(panel, f"set_margin_{side}")(14)
             palette.set_child(panel)
             feedback = Gtk.Label(xalign=0, wrap=True)
+            panel.append(Gtk.Label(label="Send to Mac", xalign=0))
 
             def run_action(fn, success, result=None):
                 def work():
@@ -283,10 +303,22 @@ def open_panel(start_hidden, show_handoff=False):
                         GLib.idle_add(feedback.set_label, str(error))
                 executor.submit(work)
 
-            def choose_file(_button):
+            desktop_on_mac = Gtk.Button(label="Show this desktop on Mac")
+            desktop_on_mac.add_css_class("suggested-action")
+            desktop_on_mac.connect("clicked", lambda _: run_action(
+                lambda: peer_call("--queue", "desktop"), "Desktop queued for your Mac."
+            ))
+            panel.append(desktop_on_mac)
+
+            def choose_file(_button, images_only=False):
                 picker = Gtk.FileChooserNative.new("Send file to Mac", palette, Gtk.FileChooserAction.OPEN,
                                                    "Send", "Cancel")
                 palette.file_picker = picker
+                if images_only:
+                    image_filter = Gtk.FileFilter()
+                    image_filter.set_name("Images")
+                    image_filter.add_mime_type("image/*")
+                    picker.add_filter(image_filter)
 
                 def selected(dialog, answer):
                     if answer == Gtk.ResponseType.ACCEPT:
@@ -300,9 +332,14 @@ def open_panel(start_hidden, show_handoff=False):
                 picker.connect("response", selected)
                 picker.show()
 
-            send = Gtk.Button(label="Send file to Mac…")
+            send_row = Gtk.Box(spacing=6)
+            send = Gtk.Button(label="Send file…", hexpand=True)
             send.connect("clicked", choose_file)
-            panel.append(send)
+            send_row.append(send)
+            screenshot = Gtk.Button(label="Send screenshot…", hexpand=True)
+            screenshot.connect("clicked", lambda button: choose_file(button, images_only=True))
+            send_row.append(screenshot)
+            panel.append(send_row)
             link_row = Gtk.Box(spacing=5)
             link = Gtk.Entry(placeholder_text="https://…", hexpand=True)
             link_row.append(link)
@@ -317,23 +354,53 @@ def open_panel(start_hidden, show_handoff=False):
             link_row.append(send_link)
             panel.append(link_row)
 
+            last = Gtk.Button(label="Open last Linux project", sensitive=False)
+            panel.append(last)
+            recent = {}
+
+            def open_saved(project):
+                answer = peer_call(payload={"version": 1, "action": "open", "project": project["id"]})
+                remember_project(project["id"])
+                return answer
+
+            def show_recent(project):
+                recent.update(project)
+                last.set_label(f'Open {recent["name"]} on Linux')
+                last.set_sensitive(True)
+                feedback.set_label("Opened on Linux.")
+                return False
+
+            def open_recent(_):
+                project = dict(recent)
+                run_action(lambda: open_saved(project), None, lambda _reply: show_recent(project))
+
+            last.connect("clicked", open_recent)
+            project_actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+            panel.append(Gtk.Expander(label="Saved projects", child=project_actions))
             projects_on_mac = Gtk.Button(label="Show projects on Mac")
             projects_on_mac.connect("clicked", lambda _: run_action(
                 lambda: peer_call("--queue", "projects"), "Projects queued for your Mac."
             ))
-            panel.append(projects_on_mac)
+            project_actions.append(projects_on_mac)
             saved = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            panel.append(saved)
+            project_actions.append(saved)
             panel.append(feedback)
 
             def show_projects(info):
+                try:
+                    recent_id = recent_project_file().read_text().strip()
+                except OSError:
+                    recent_id = None
                 for project in info.get("projects", []):
                     jump = Gtk.Button(label=project["name"])
-                    jump.connect("clicked", lambda _button, key=project["id"]: run_action(
-                        lambda: peer_call(payload={"version": 1, "action": "open", "project": key}),
-                        "Opened on Linux."
+                    jump.connect("clicked", lambda _button, selected=project: run_action(
+                        lambda: open_saved(selected), None, lambda _reply: show_recent(selected)
                     ))
                     saved.append(jump)
+                    if project["id"] == recent_id:
+                        recent.update(project)
+                        last.set_label(f'Open {project["name"]} on Linux')
+                        last.set_sensitive(True)
 
             run_action(lambda: peer_call(payload={"version": 1, "action": "pair"}), None, show_projects)
             palette.present()

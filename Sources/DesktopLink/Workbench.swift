@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class WorkbenchModel: ObservableObject {
@@ -16,11 +17,29 @@ final class WorkbenchModel: ObservableObject {
     @Published private(set) var pairingError: String?
     @Published private(set) var needsHostVerification = false
     @Published private(set) var desktopAvailability: DesktopAvailability?
+    @Published private(set) var receivingPeer: String?
+    @Published private(set) var connectionCheck: ConnectionCheck?
+    @Published private(set) var checkingConnection = false
+    @Published private(set) var lastProjects: [String: LinuxProject]
+    @Published private(set) var jobs: [LinuxJob] = []
+    @Published private(set) var jobDetail: PeerReply?
+    @Published private(set) var supportsJobs = false
+    private var transferProtocols: [String: Bool]
+    private var loadedPeer: String?
+    private var checkingJobs = false
+    private var jobRevision = 0
+
+    let inbox: HandoffInbox
 
     var selectedName: String { peers.first(where: { $0.address == selected })?.name ?? "Linux" }
 
-    init() {
+    init(inbox: HandoffInbox) {
+        self.inbox = inbox
         let defaults = UserDefaults.standard
+        transferProtocols = defaults.dictionary(forKey: "durableTransferPeers") as? [String: Bool] ?? [:]
+        lastProjects = defaults.data(forKey: "lastLinuxProjects").flatMap {
+            try? JSONDecoder().decode([String: LinuxProject].self, from: $0)
+        } ?? [:]
         let saved = defaults.data(forKey: "linuxPeers")
             .flatMap { try? JSONDecoder().decode([LinuxPeer].self, from: $0) }
         peers = saved ?? []
@@ -31,22 +50,34 @@ final class WorkbenchModel: ObservableObject {
         selected = defaults.string(forKey: "selectedLinuxPeer").flatMap { address in
             peers.contains { $0.address == address } ? address : nil
         } ?? peers.first?.address
+        let incoming = defaults.string(forKey: "receivingLinuxPeer") ?? defaults.string(forKey: "initialLinuxPeer")
+        receivingPeer = incoming.flatMap { PeerClient.validAddress($0) ? $0 : nil }
     }
 
     func select(_ address: String) async {
-        guard running == nil else { return }
+        guard running == nil, peers.contains(where: { $0.address == address }) else { return }
         if selected != address {
+            loadedPeer = nil
             projects = []
             volumes = []
             result = nil
             desktopAvailability = nil
+            connectionCheck = nil
+            jobs = []
+            jobDetail = nil
+            supportsJobs = false
+            jobRevision += 1
         }
         selected = address
         UserDefaults.standard.set(address, forKey: "selectedLinuxPeer")
         await send(PeerRequest(action: "pair"), label: "Contacting Linux")
     }
 
-    func pair(_ address: String) async {
+    func loadSelectedIfNeeded(_ address: String) async {
+        if selected == address, loadedPeer != address { await select(address) }
+    }
+
+    func pair(_ address: String, receiveHandoffs: Bool = false) async {
         guard running == nil, PeerClient.validAddress(address) else { return }
         running = "Pairing Linux"
         clearPairingError()
@@ -75,12 +106,35 @@ final class WorkbenchModel: ObservableObject {
         projects = info.projects ?? []
         volumes = info.volumes ?? []
         desktopAvailability = info.desktopAvailability
+        connectionCheck = nil
+        jobs = []
+        jobDetail = nil
+        supportsJobs = info.jobProtocol == 1
+        rememberTransferProtocol(info, for: address)
+        loadedPeer = address
+        jobRevision += 1
         result = nil
         if let data = try? JSONEncoder().encode(peers) {
             UserDefaults.standard.set(data, forKey: "linuxPeers")
         }
         UserDefaults.standard.set(address, forKey: "selectedLinuxPeer")
+        if receiveHandoffs { enableReceiving(from: address) }
         notice = "Paired with \(peer.name)."
+    }
+
+    func enableReceiving(from address: String?) {
+        guard address == nil || peers.contains(where: { $0.address == address }) else { return }
+        receivingPeer = address
+        UserDefaults.standard.set(address ?? "", forKey: "receivingLinuxPeer")
+    }
+
+    func diagnose() async {
+        guard let address = selected, !checkingConnection else { return }
+        checkingConnection = true
+        connectionCheck = nil
+        defer { checkingConnection = false }
+        let check = await Task.detached(priority: .utility) { PeerClient.checkConnection(address) }.value
+        if selected == address { connectionCheck = check }
     }
 
     func clearPairingError() {
@@ -102,25 +156,80 @@ final class WorkbenchModel: ObservableObject {
         }
     }
 
-    func openLink(_ text: String) async {
-        if await send(PeerRequest(action: "open-link", url: text), label: "Opening link") != nil {
-            notice = "Opened on \(selectedName)."
-        }
+    func openLink(_ text: String, to address: String? = nil) async {
+        guard running == nil, let target = address ?? selected, peers.contains(where: { $0.address == target }) else { return }
+        running = "Sending link"
+        error = nil
+        notice = nil
+        defer { running = nil }
+        do {
+            if try await supportsDurableTransfers(on: target) {
+                try await inbox.sendLink(text, to: target)
+            } else {
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try PeerClient.request(PeerRequest(action: "open-link", url: text), on: target)
+                }.value
+            }
+            notice = "Opened on \(deviceName(target))."
+        } catch { self.error = error.localizedDescription }
     }
 
-    func sendFile(_ file: URL, volume: String) async {
-        guard running == nil, let target = selected else { return }
+    func sendFile(_ file: URL, volume: String, to address: String? = nil) async {
+        guard running == nil, let target = address ?? selected, peers.contains(where: { $0.address == target }) else { return }
         running = "Sending file"
         error = nil
         notice = nil
         defer { running = nil }
         do {
-            let path = try await Task.detached(priority: .userInitiated) {
-                try FileHandoff.send(file, on: target, volume: volume)
-            }.value
-            notice = "Saved on \(selectedName): \(path)"
+            let path: String
+            if try await supportsDurableTransfers(on: target) {
+                path = try await inbox.sendFile(file, to: target, volume: volume)
+            } else {
+                path = try await Task.detached(priority: .userInitiated) {
+                    try FileHandoff.send(file, on: target, volume: volume)
+                }.value
+            }
+            notice = "Saved on \(deviceName(target)): \(path)"
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    func deviceName(_ address: String) -> String {
+        peers.first(where: { $0.address == address })?.name ?? address
+    }
+
+    var sendVolume: String {
+        guard let selected else { return "home" }
+        let preferred = inbox.preferredVolume(for: selected)
+        return volumes.contains(where: { $0.id == preferred }) ? preferred : "home"
+    }
+
+    func chooseFile(imagesOnly: Bool = false) {
+        guard let target = selected, running == nil else { return }
+        let destination = sendVolume
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Send"
+        panel.message = "Send to \(deviceName(target))"
+        if imagesOnly { panel.allowedContentTypes = [.image] }
+        panel.begin { answer in
+            guard answer == .OK, let file = panel.url else { return }
+            Task { await self.sendFile(file, volume: destination, to: target) }
+        }
+    }
+
+    func chooseReceiveFolder() {
+        guard let target = selected else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.begin { answer in
+            guard answer == .OK, let folder = panel.url else { return }
+            self.inbox.setPreferredFolder(folder, for: target)
         }
     }
 
@@ -128,23 +237,100 @@ final class WorkbenchModel: ObservableObject {
         await send(PeerRequest(action: "save", name: name, path: path), label: "Saving project")
     }
 
-    func open(_ project: LinuxProject) async {
-        if await send(PeerRequest(action: "open", project: project.id), label: "Opening folder") != nil {
+    func open(_ project: LinuxProject, on address: String? = nil) async {
+        guard let target = address ?? selected else { return }
+        if await send(PeerRequest(action: "open", project: project.id), label: "Opening folder", on: target) != nil {
+            lastProjects[target] = project
+            if let data = try? JSONEncoder().encode(lastProjects) {
+                UserDefaults.standard.set(data, forKey: "lastLinuxProjects")
+            }
             notice = "Opened \(project.name) on Linux."
         }
     }
 
-    func build(_ project: LinuxProject) async {
-        await send(PeerRequest(action: "build", project: project.id), label: "Building \(project.name)")
+    func openTerminal(_ project: LinuxProject) async {
+        if await send(PeerRequest(action: "open-terminal", project: project.id), label: "Opening terminal") != nil {
+            notice = "Opened the terminal for \(project.name)."
+        }
+    }
+
+    func build(_ project: LinuxProject, preset: String = "build") async {
+        guard let selected, running == nil else { return }
+        if !supportsJobs {
+            await send(PeerRequest(action: "build", project: project.id), label: "Building \(project.name)")
+            return
+        }
+        let defaults = UserDefaults.standard
+        let index = [selected, project.id, preset].joined(separator: "/")
+        var pending = defaults.dictionary(forKey: "pendingJobStarts") ?? [:]
+        let token = pending[index] as? String ?? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        // Save the ticket before the request so a lost response can be retried without starting a second job.
+        pending[index] = token
+        defaults.set(pending, forKey: "pendingJobStarts")
+        if let reply = await send(PeerRequest(action: "job-start", project: project.id, job: token, preset: preset),
+                                  label: "Starting \(project.name)"), let job = reply.job {
+            pending.removeValue(forKey: index)
+            defaults.set(pending, forKey: "pendingJobStarts")
+            jobDetail = reply
+            updateJob(job)
+        }
+    }
+
+    func refreshJobs() async {
+        guard supportsJobs, !checkingJobs, let address = selected else { return }
+        checkingJobs = true
+        let revision = jobRevision
+        defer { checkingJobs = false }
+        let reply = try? await Task.detached(priority: .utility) {
+            try PeerClient.request(PeerRequest(action: "job-list"), on: address)
+        }.value
+        guard !Task.isCancelled, selected == address, revision == jobRevision, let list = reply?.jobs else { return }
+        jobs = list
+    }
+
+    func inspectJob(_ job: LinuxJob, action: String = "job-status") async {
+        if let reply = await send(PeerRequest(action: action, job: job.id), label: action == "job-cancel" ? "Cancelling job" : "Reading job") {
+            jobDetail = reply
+            if let job = reply.job { updateJob(job) }
+        }
+    }
+
+    func fetchArtifact(for job: LinuxJob) async -> BuildArtifact? {
+        await send(PeerRequest(action: "job-artifact", job: job.id), label: "Fetching artifact")?.artifact
+    }
+
+    private func updateJob(_ job: LinuxJob) {
+        if let index = jobs.firstIndex(where: { $0.id == job.id }) {
+            guard jobs[index].updatedAt <= job.updatedAt else { return }
+            jobs[index] = job
+        } else { jobs.insert(job, at: 0) }
+        jobRevision += 1
     }
 
     func scrape(_ url: String) async {
         await send(PeerRequest(action: "scrape", url: url), label: "Scraping on Linux")
     }
 
+    private func rememberTransferProtocol(_ reply: PeerReply, for host: String) {
+        transferProtocols[host] = reply.transferProtocol == 1
+        UserDefaults.standard.set(transferProtocols, forKey: "durableTransferPeers")
+    }
+
+    private func supportsDurableTransfers(on host: String) async throws -> Bool {
+        if let supported = transferProtocols[host] { return supported }
+        let reply = try await Task.detached(priority: .utility) {
+            try PeerClient.request(PeerRequest(action: "pair"), on: host)
+        }.value
+        guard reply.system == "Linux" else {
+            throw PeerClient.Failure(reason: "The receiver did not identify a Linux system.", kind: .receiverError)
+        }
+        rememberTransferProtocol(reply, for: host)
+        return reply.transferProtocol == 1
+    }
+
     @discardableResult
-    private func send(_ request: PeerRequest, label: String) async -> PeerReply? {
-        guard running == nil, let target = selected else { return nil }
+    private func send(_ request: PeerRequest, label: String, on address: String? = nil) async -> PeerReply? {
+        guard running == nil, let target = address ?? selected, peers.contains(where: { $0.address == target }) else { return nil }
         running = label
         error = nil
         notice = nil
@@ -156,8 +342,13 @@ final class WorkbenchModel: ObservableObject {
             }.value
             if let updated = reply.projects { projects = updated }
             if let disks = reply.volumes { volumes = disks }
-            if request.action == "pair" { desktopAvailability = reply.desktopAvailability }
-            if reply.output != nil { result = reply }
+            if request.action == "pair" {
+                loadedPeer = target
+                desktopAvailability = reply.desktopAvailability
+                supportsJobs = reply.jobProtocol == 1
+                rememberTransferProtocol(reply, for: target)
+            }
+            if ["build", "scrape"].contains(request.action), reply.output != nil { result = reply }
             if request.action == "save" { notice = "Project saved on Linux." }
             return reply
         } catch {
@@ -173,17 +364,13 @@ struct ClipboardMenu: View {
 
     var body: some View {
         Menu {
-            if sync.address != nil {
-                let name = model.peers.first(where: { $0.address == sync.address })?.name ?? "input device"
-                Toggle("Automatic with \(name)", isOn: Binding(
-                    get: { sync.enabled },
-                    set: { enabled in
-                        UserDefaults.standard.set(enabled, forKey: "automaticClipboard")
-                        sync.setEnabled(enabled)
-                    }
+            if let target = model.selected {
+                Toggle("Automatic with \(model.selectedName)", isOn: Binding(
+                    get: { sync.isEnabled(for: target) },
+                    set: { sync.setEnabled($0, for: target) }
                 ))
-                if sync.enabled {
-                    Text(sync.ready ? "Automatic sharing connected" : "Waiting for a connection")
+                if sync.isEnabled(for: target) {
+                    Text(sync.address == target && sync.ready ? "Automatic sharing connected" : "Waiting for its input or desktop link")
                 }
                 Divider()
             }
@@ -207,6 +394,7 @@ struct Workbench: View {
     @ObservedObject var clipboardSync: ClipboardSync
     @ObservedObject var inbox: HandoffInbox
     @ObservedObject var desktop: RemoteDesktop
+    @ObservedObject var input: LinkModel
     @State private var address = ""
     @State private var projectName = ""
     @State private var projectPath = ""
@@ -214,8 +402,9 @@ struct Workbench: View {
     @State private var showPair = false
     @State private var showSave = false
     @State private var showResearch = false
+    @State private var showConnection = false
+    @State private var receiveWhenPaired = false
     @State private var link = ""
-    @State private var volume = "home"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -249,8 +438,11 @@ struct Workbench: View {
                     }
                     if model.selected != nil {
                         desktopCard
+                        if showConnection { connectionDetails }
                         handoff
+                        TransferInboxView(inbox: inbox, address: model.selected)
                         projects
+                        if model.supportsJobs { JobPanel(model: model) }
                         DisclosureGroup("Research tools", isExpanded: $showResearch) {
                             scrape.padding(.top, 8)
                         }
@@ -310,6 +502,8 @@ struct Workbench: View {
             }
             Text("Use a Linux account you can reach with an SSH key. Pair adds the receiver to that account if it’s missing.")
                 .font(.caption).foregroundStyle(.secondary)
+            Toggle("Receive handoffs from this device on this Mac", isOn: $receiveWhenPaired)
+                .font(.callout)
             if let error = model.pairingError {
                 Label(error, systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.orange)
@@ -317,13 +511,7 @@ struct Workbench: View {
             if model.needsHostVerification, PeerClient.validAddress(target) {
                 Text("In Terminal, compare the fingerprint SSH shows with the host key on Linux before approving it.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("Copy verification command") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(
-                        "ssh -o StrictHostKeyChecking=ask -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes -- '\(target)' true",
-                        forType: .string
-                    )
-                }
+                Button("Copy verification command") { copyVerificationCommand(for: target) }
             }
         }
         .disabled(model.running != nil)
@@ -332,8 +520,12 @@ struct Workbench: View {
     private func pair(_ target: String) {
         guard PeerClient.validAddress(target) else { return }
         Task {
-            await model.pair(target)
-            if model.pairingError == nil, model.selected == target { showPair = false; address = "" }
+            await model.pair(target, receiveHandoffs: receiveWhenPaired)
+            if model.pairingError == nil, model.selected == target {
+                showPair = false
+                receiveWhenPaired = false
+                address = ""
+            }
         }
     }
 
@@ -343,12 +535,18 @@ struct Workbench: View {
                 Text("Send to \(model.selectedName)").font(.subheadline.weight(.semibold)).lineLimit(1)
                 Spacer()
                 if !model.volumes.isEmpty {
-                    Picker("Save to", selection: $volume) {
+                    Picker("Save to", selection: Binding(
+                        get: { model.sendVolume },
+                        set: { volume in
+                            if let selected = model.selected { inbox.setPreferredVolume(volume, for: selected) }
+                        }
+                    )) {
                         ForEach(model.volumes) { disk in Text(disk.name).tag(disk.id) }
                     }
                     .fixedSize()
                 }
-                Button("Send file…") { pickFile() }
+                Button("Send file…") { model.chooseFile() }
+                    .help("Choose or drop one file to send")
             }
             HStack {
                 TextField("https://…", text: $link).accessibilityLabel("Link to open on Linux")
@@ -369,9 +567,25 @@ struct Workbench: View {
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
+            if let selected = model.selected, model.receivingPeer == selected {
+                HStack {
+                    Label("Receive in \(inbox.preferredFolder(for: selected).lastPathComponent)", systemImage: "tray.and.arrow.down")
+                        .lineLimit(1)
+                        .help(inbox.preferredFolder(for: selected).path)
+                    Spacer()
+                    Button("Choose folder…") { model.chooseReceiveFolder() }
+                }
+                .font(.caption)
+            }
         }
         .disabled(model.running != nil)
-        .onChange(of: model.selected) { _, _ in volume = "home" }
+        .dropDestination(for: URL.self) { items, _ in
+            guard let target = model.selected, model.running == nil, items.count == 1,
+                  let file = items.first, file.isFileURL else { return false }
+            let volume = model.sendVolume
+            Task { await model.sendFile(file, volume: volume, to: target) }
+            return true
+        }
     }
 
     private var desktopCard: some View {
@@ -387,12 +601,70 @@ struct Workbench: View {
                 desktopSetup
             }
             Spacer(minLength: 8)
-            OpenDesktopMenu(desktop: desktop, address: model.selected)
-                .fixedSize()
+            VStack(alignment: .trailing, spacing: 4) {
+                OpenDesktopMenu(desktop: desktop, address: model.selected).fixedSize()
+                Button(model.checkingConnection ? "Checking…" : "Check connection") {
+                    showConnection = true
+                    Task { await model.diagnose() }
+                }
+                .controlSize(.small)
+                .disabled(model.checkingConnection)
+            }
         }
         .padding(15)
         .background(.purple.opacity(0.075), in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.purple.opacity(0.18)))
+    }
+
+    private var connectionDetails: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if let report = model.connectionCheck {
+                ForEach(report.steps) { step in
+                    checkRow(step.name, detail: step.detail, status: step.state)
+                }
+                if report.offersHostVerification, let selected = model.selected {
+                    Button("Copy verification command") { copyVerificationCommand(for: selected) }
+                }
+            } else if model.checkingConnection {
+                ProgressView().controlSize(.small).accessibilityLabel("Checking the connection")
+            }
+            if let selected = model.selected {
+                let inputReady = input.inputPeerAddress == selected && input.status?.connected == true
+                checkRow("Shared keyboard and mouse",
+                         detail: inputReady ? "Input link connected" : "Check the Deskflow and Waynergy pairing for this device",
+                         status: inputReady ? .ready : .unchecked)
+                checkRow("Automatic clipboard",
+                         detail: clipboardSync.address == selected && clipboardSync.ready ? "Connected" : "Turn on sharing for this device in Clipboard",
+                         status: clipboardSync.address == selected && clipboardSync.ready ? .ready : .unchecked)
+                Toggle("Receive handoffs from \(model.selectedName) on this Mac", isOn: Binding(
+                    get: { model.receivingPeer == selected },
+                    set: { model.enableReceiving(from: $0 ? selected : nil) }
+                ))
+            }
+        }
+        .font(.caption)
+        .padding(12)
+        .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private func checkRow(_ title: String, detail: String, status: ConnectionCheck.State) -> some View {
+        let symbol = status == .ready ? "checkmark.circle" : status == .actionNeeded ? "exclamationmark.circle" : "circle.dashed"
+        return HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: symbol).foregroundStyle(status == .actionNeeded ? Color.orange : .secondary)
+            Text(title).fontWeight(.medium)
+            Text(detail).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func copyVerificationCommand(for target: String) {
+        guard PeerClient.validAddress(target) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(
+            "ssh -o StrictHostKeyChecking=ask -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes -- '\(target)' true",
+            forType: .string
+        )
     }
 
     @ViewBuilder private var desktopSetup: some View {
@@ -410,17 +682,6 @@ struct Workbench: View {
                 .font(.caption).foregroundStyle(.secondary)
         case nil:
             EmptyView()
-        }
-    }
-
-    private func pickFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        let destination = volume
-        panel.begin { answer in
-            guard answer == .OK, let file = panel.url else { return }
-            Task { await model.sendFile(file, volume: destination) }
         }
     }
 
@@ -454,9 +715,17 @@ struct Workbench: View {
                         .lineLimit(1)
                     Spacer()
                     Button("Open on Linux") { Task { await model.open(project) } }
-                    Button("Build") { Task { await model.build(project) } }
-                        .disabled(!project.canBuild)
-                        .help(project.canBuild ? "Run its preset on Linux" : "Add a build preset on Linux")
+                    if model.supportsJobs { Button("Terminal") { Task { await model.openTerminal(project) } } }
+                    if let presets = project.presets, !presets.isEmpty, model.supportsJobs {
+                        Menu("Run") {
+                            ForEach(presets, id: \.id) { preset in
+                                Button(preset.name) { Task { await model.build(project, preset: preset.id) } }
+                            }
+                        }
+                        .fixedSize()
+                    } else if project.canBuild {
+                        Button("Build") { Task { await model.build(project) } }
+                    }
                 }
                 .padding(7)
                 .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 6))

@@ -7,13 +7,12 @@
 - For **Open Desktop**, a running Hyprland session and the Gliff server installed on Linux. Omarchy is the tested desktop. [Gliff Linux setup](https://github.com/omacom/gliff)
 - For the optional Linux tray, GTK 4.12 or later and PyGObject. A StatusNotifier tray host displays the icon. The launcher also opens the card directly. [GTK version reference](https://docs.gtk.org/gtk4/method.CssProvider.load_from_string.html)
 
-## Install the Mac preview
+## Build the Mac app from `main`
 
 ```sh
 brew install pkg-config gtk4 libadwaita rustup
 git clone https://github.com/Niraven/handoff-fox.git
 cd handoff-fox
-git switch --detach v0.1.0-preview.1
 ./script/build_and_run.sh --install
 ```
 
@@ -26,14 +25,17 @@ The preview is for local builds. `./script/build_and_run.sh --package` creates a
 1. Click the fox and choose **Pair Linux**. If you already paired a device, open **Send & projects** and click **+**.
 2. Enter an SSH alias or `user@hostname`. If the host is new, compare the fingerprint shown by OpenSSH against the one on Linux before accepting it in Terminal.
 3. Click **Pair**. Fox installs its receiver under `~/.local/bin` for that Linux account if the receiver is missing.
-4. Click **Open Desktop** to mirror the Linux display. Use **Desktop options** for **Private screen**, which creates a separate virtual monitor in the same Linux login. Press **Shift + Escape** to return viewer input to the Mac.
+4. Click **Open Desktop** to mirror the Linux display. **Desktop options** offers a private virtual screen in the same Linux login. **Actual Size** uses one Mac display pixel per stream pixel, clipping the edges if the viewer window is too small. Switching between Fit and Actual Size reopens the viewer and can replace a private virtual screen. The fox remembers the display mode and scale for each device. Press **Shift + Escape** to return viewer input to the Mac.
+5. Open **Check connection** for the SSH trust, sign-in, receiver, desktop, clipboard, and input status. Check the SSH fingerprint on the Linux device before accepting it.
+
+If you already installed the receiver with an earlier preview, run `./script/install_peer.sh` on Linux from the same checkout to update it. If you use the Linux tray, update it with `./script/install_omarchy.sh` and reopen it.
 
 ## Files, clipboard, and projects
 
-- **Send & projects** sends a file up to 128 MiB or opens an HTTP or HTTPS link on Linux. Use **Save folder** to add a Linux project. Choose **Open on Linux** to reopen it in the Linux file manager.
-- **Clipboard** provides manual plain-text copy in both directions. Automatic clipboard sharing uses the existing configured input pairing with a verified host. Wayland uses `wl-copy` and `wl-paste`.
-- For Linux-to-Mac handoffs, install the optional Linux tray using `./script/install_omarchy.sh` on Linux. On the Mac, set `defaults write local.desktoplink.control initialLinuxPeer -string 'linux-host'` with your verified SSH alias, then restart Handoff Fox. The tray’s **Send to Mac** action queues delivery. The Mac receives files in `~/Downloads/Handoff Fox`.
-- **Control + Option + J** opens Mac handoff. On Omarchy, `./script/install_hypr_hotkey.sh` adds a Linux shortcut for **Ctrl + Alt + J**.
+- **Control + Option + J** opens the Mac quick panel for the last desktop, file, link, screenshot, or saved project. On Omarchy, `./script/install_hypr_hotkey.sh` adds **Ctrl + Alt + J** for the Linux quick panel.
+- **Send & projects** accepts a dropped file up to 128 MiB or an HTTP or HTTPS link. A current Linux receiver reports delivered items in **Transfer Inbox** and keeps tickets for retries. Use **Save folder** to add a Linux project and open its folder, terminal, or approved presets.
+- **Clipboard** provides manual plain-text copy in both directions. Enable **Automatic** for each device you want to share with. An active desktop or configured input pairing is required. Wayland uses `wl-copy` and `wl-paste`.
+- For Linux-to-Mac handoffs, install the optional Linux tray using `./script/install_omarchy.sh`. Enable receiving from that device during pairing or under **Check connection**. The Linux quick panel queues files and links while the Mac is away. The Mac defaults to `~/Downloads/Handoff Fox` and lets you choose another folder for that peer.
 
 ## Send feedback
 

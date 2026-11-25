@@ -70,17 +70,20 @@ final class LinkController: NSObject, NSApplicationDelegate {
     private let art = Bundle.main.url(forResource: "TrayFox", withExtension: "png")
         .flatMap { NSImage(contentsOf: $0) }
     private let popover = NSPopover()
-    private let workbenchModel = WorkbenchModel()
+    private lazy var workbenchModel = WorkbenchModel(inbox: inbox)
     private let clipboardSync = ClipboardSync(
         address: UserDefaults.standard.string(forKey: "initialLinuxPeer"),
-        enabled: UserDefaults.standard.bool(forKey: "automaticClipboard")
+        enabled: UserDefaults.standard.bool(forKey: "automaticClipboard"),
+        defaults: .standard
     )
     private var workbenchWindow: NSWindow?
+    private var quickWindow: NSPanel?
     private let inbox = HandoffInbox()
     private let desktop = RemoteDesktop()
     private var hotkey: EventHotKeyRef?
     private var hotkeyHandler: EventHandlerRef?
     private var wakeObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
     private lazy var menuItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private var refreshLoop: Task<Void, Never>?
     private var observations = Set<AnyCancellable>()
@@ -109,11 +112,21 @@ final class LinkController: NSObject, NSApplicationDelegate {
         model.$status.sink { [weak self] value in
             guard let self else { return }
             self.menuItem.button?.toolTip = self.model.inputPeerAddress.flatMap { _ in value?.title } ?? "Handoff Fox"
-            self.updateClipboard(inputConnected: value?.connected == true, desktopHost: self.desktop.activeHost)
+            self.updateClipboard(inputConnected: value?.connected == true, desktopHost: self.desktop.activeHost,
+                                 selected: self.workbenchModel.selected)
         }.store(in: &observations)
         desktop.$activeHost.sink { [weak self] address in
             guard let self else { return }
-            self.updateClipboard(inputConnected: self.model.status?.connected == true, desktopHost: address)
+            self.updateClipboard(inputConnected: self.model.status?.connected == true, desktopHost: address,
+                                 selected: self.workbenchModel.selected)
+        }.store(in: &observations)
+        workbenchModel.$selected.removeDuplicates().sink { [weak self] address in
+            guard let self else { return }
+            self.updateClipboard(inputConnected: self.model.status?.connected == true, desktopHost: self.desktop.activeHost,
+                                 selected: address)
+        }.store(in: &observations)
+        workbenchModel.$receivingPeer.removeDuplicates().sink { [weak self] address in
+            self?.startInbox(for: address)
         }.store(in: &observations)
         model.$activity.map { $0?.needsAttention ?? false }.removeDuplicates().sink { [weak self] warning in
             self?.warning = warning
@@ -140,20 +153,27 @@ final class LinkController: NSObject, NSApplicationDelegate {
             }
         }
         registerHotkey()
-        startInbox()
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        let workspaceNotifications = NSWorkspace.shared.notificationCenter
+        sleepObserver = workspaceNotifications.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.desktop.prepareForSleep() }
+        }
+        wakeObserver = workspaceNotifications.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.clipboardSync.setConnected(false)
+                self.clipboardSync.setTarget(self.workbenchModel.selected, connected: false)
                 await self.model.refresh()
                 self.updateClipboard(inputConnected: self.model.status?.connected == true,
-                                     desktopHost: self.desktop.activeHost)
-                self.startInbox()
+                                     desktopHost: self.desktop.activeHost, selected: self.workbenchModel.selected)
+                self.startInbox(for: self.workbenchModel.receivingPeer)
+                await self.desktop.recoverAfterWake()
             }
         }
         if CommandLine.arguments.contains("--workbench") { showWorkbench() }
+        if CommandLine.arguments.contains("--quick-actions") { showQuickActions() }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -170,15 +190,22 @@ final class LinkController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func updateClipboard(inputConnected: Bool, desktopHost: String?) {
-        let desktopSharesClipboard = desktopHost != nil && desktopHost == clipboardSync.address
-        clipboardSync.setConnected(inputConnected || desktopSharesClipboard)
+    private func updateClipboard(inputConnected: Bool, desktopHost: String?, selected: String?) {
+        let sameInput = selected != nil && selected == model.inputPeerAddress && inputConnected
+        let sameDesktop = selected != nil && selected == desktopHost
+        clipboardSync.setTarget(selected, connected: sameInput || sameDesktop)
     }
 
-    private func startInbox() {
-        inbox.start(address: UserDefaults.standard.string(forKey: "initialLinuxPeer")) { [weak self] in
+    private func startInbox(for address: String?) {
+        inbox.start(address: address, openProjects: { [weak self] in
             self?.showWorkbench()
-        }
+        }, openDesktop: { [weak self] host in
+            guard let self, self.workbenchModel.receivingPeer == host else { return }
+            Task {
+                guard self.workbenchModel.receivingPeer == host else { return }
+                await self.desktop.showOrOpen(host: host)
+            }
+        })
     }
 
     private func registerHotkey() {
@@ -187,7 +214,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
         let installed = InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
             guard let context else { return OSStatus(eventNotHandledErr) }
             let controller = Unmanaged<LinkController>.fromOpaque(context).takeUnretainedValue()
-            Task { @MainActor in controller.showWorkbench() }
+            Task { @MainActor in controller.showQuickActions() }
             return noErr
         }, 1, &spec, context, &hotkeyHandler)
         guard installed == noErr else { return }
@@ -200,12 +227,15 @@ final class LinkController: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         desktop.disconnect()
+        refreshLoop?.cancel()
         if let hotkey { UnregisterEventHotKey(hotkey) }
         if let hotkeyHandler { RemoveEventHandler(hotkeyHandler) }
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
     }
 
     private func showWorkbench() {
+        quickWindow?.orderOut(nil)
         popover.performClose(nil)
         if workbenchWindow == nil {
             let window = NSWindow(
@@ -216,12 +246,36 @@ final class LinkController: NSObject, NSApplicationDelegate {
             window.title = "Handoff Fox"
             window.contentMinSize = NSSize(width: 530, height: 410)
             window.isReleasedWhenClosed = false
-            window.contentViewController = NSHostingController(rootView: Workbench(model: workbenchModel, clipboardSync: clipboardSync, inbox: inbox, desktop: desktop))
+            window.contentViewController = NSHostingController(rootView: Workbench(model: workbenchModel, clipboardSync: clipboardSync, inbox: inbox, desktop: desktop, input: model))
             window.center()
             workbenchWindow = window
         }
         NSApp.activate()
         workbenchWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private func showQuickActions() {
+        popover.performClose(nil)
+        if let quickWindow, quickWindow.isVisible {
+            quickWindow.orderOut(nil)
+            return
+        }
+        if quickWindow == nil {
+            let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 350, height: 210),
+                                 styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+            window.title = "Handoff Fox Quick Actions"
+            window.isReleasedWhenClosed = false
+            window.isFloatingPanel = true
+            let view = NSHostingController(rootView: QuickActions(model: workbenchModel, desktop: desktop,
+                close: { [weak window] in window?.orderOut(nil) },
+                workbench: { [weak self] in self?.showWorkbench() }))
+            view.sizingOptions = [.preferredContentSize]
+            window.contentViewController = view
+            window.center()
+            quickWindow = window
+        }
+        NSApp.activate()
+        quickWindow?.makeKeyAndOrderFront(nil)
     }
 
     private func redraw(lift: CGFloat = 0) {

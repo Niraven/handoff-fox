@@ -14,7 +14,11 @@ final class ClipboardSync: ObservableObject {
     @Published private(set) var enabled: Bool
     @Published private(set) var ready = false
 
-    let address: String?
+    @Published private(set) var address: String?
+    @Published private var devicePreferences: [String: Bool]
+
+    private let defaults: UserDefaults?
+    private static let preferencesKey = "clipboardSharingByDevice"
     private let board: NSPasteboard
     private let sshConfig: URL?
     private let writes = DispatchQueue(label: "local.desktoplink.clipboard")
@@ -24,22 +28,58 @@ final class ClipboardSync: ObservableObject {
     private var loop: Task<Void, Never>?
     private var reader: Task<Void, Never>?
     private var process: Process?
-    private var writer: FileHandle?
+    private var writer: ClipboardWriter?
     private var channel: UUID?
     private var frames = Data()
     private var retryAfter = Date.distantPast
     private var heartbeat = Date.distantPast
 
-    init(address: String?, enabled: Bool, board: NSPasteboard = .general, sshConfig: URL? = nil) {
+    init(address: String?, enabled: Bool, board: NSPasteboard = .general, sshConfig: URL? = nil,
+         defaults: UserDefaults? = nil) {
+        let address = address.flatMap { PeerClient.validAddress($0) ? $0 : nil }
+        let migrated = address.map { [$0: enabled] } ?? [:]
+        let saved = defaults?.dictionary(forKey: Self.preferencesKey) as? [String: Bool]
+        let devices = saved ?? migrated
         self.address = address
-        self.enabled = enabled
+        self.enabled = address.flatMap { devices[$0] } ?? false
+        self.devicePreferences = devices
         self.board = board
         self.sshConfig = sshConfig
+        self.defaults = defaults
+        if saved == nil, !migrated.isEmpty {
+            defaults?.set(migrated, forKey: Self.preferencesKey)
+        }
+    }
+
+    func isEnabled(for address: String) -> Bool {
+        devicePreferences[address] ?? false
+    }
+
+    func setEnabled(_ value: Bool, for address: String) {
+        guard PeerClient.validAddress(address) else { return }
+        devicePreferences[address] = value
+        defaults?.set(devicePreferences, forKey: Self.preferencesKey)
+        if address == self.address {
+            enabled = value
+            reconcile()
+        }
     }
 
     func setEnabled(_ value: Bool) {
-        enabled = value
-        reconcile()
+        guard let address else { return }
+        setEnabled(value, for: address)
+    }
+
+    func setTarget(_ target: String?, connected: Bool) {
+        let target = target.flatMap { PeerClient.validAddress($0) ? $0 : nil }
+        if address != target {
+            loop?.cancel()
+            loop = nil
+            close()
+            address = target
+            enabled = target.map(isEnabled(for:)) ?? false
+        }
+        setConnected(connected)
     }
 
     func setConnected(_ value: Bool) {
@@ -116,7 +156,7 @@ final class ClipboardSync: ObservableObject {
         let identity = UUID()
         channel = identity
         process = ssh
-        writer = handle
+        writer = ClipboardWriter(handle)
         heartbeat = .distantPast
         let source = output.fileHandleForReading
         reader = Task.detached { [weak self] in
@@ -138,7 +178,7 @@ final class ClipboardSync: ObservableObject {
         guard let writer, var bytes = try? JSONEncoder().encode(frame) else { return }
         bytes.append(10)
         let payload = bytes
-        writes.async { try? writer.write(contentsOf: payload) }
+        writes.async { writer.write(payload) }
     }
 
     private func receive(_ bytes: Data, on identity: UUID) {
@@ -158,7 +198,7 @@ final class ClipboardSync: ObservableObject {
                 log.info("Automatic clipboard sharing connected")
             case "clipboard":
                 guard ready, let text = frame.text, ClipboardTransfer.valid(text),
-                      !sendNewMacCopy() else { continue }
+                      !sendNewMacCopy(), !ClipboardTransfer.isProtected(board) else { continue }
                 board.clearContents()
                 board.setString(text, forType: .string)
                 observed = board.changeCount
@@ -175,14 +215,35 @@ final class ClipboardSync: ObservableObject {
 
     private func close() {
         channel = nil
+        writer?.invalidate()
         reader?.cancel()
         reader = nil
         if let process, process.isRunning { process.terminate() }
         process = nil
-        if let writer { writes.async { try? writer.close() } }
+        if let writer { writes.async { writer.close() } }
         writer = nil
         frames.removeAll(keepingCapacity: false)
         ready = false
         retryAfter = Date().addingTimeInterval(4)
     }
+}
+
+// Closing a channel invalidates queued writes before the next target starts.
+private final class ClipboardWriter: @unchecked Sendable {
+    private let handle: FileHandle
+    private let lock = NSLock()
+    private var active = true
+
+    init(_ handle: FileHandle) { self.handle = handle }
+
+    func invalidate() {
+        lock.withLock { active = false }
+    }
+
+    func write(_ data: Data) {
+        guard lock.withLock({ active }) else { return }
+        try? handle.write(contentsOf: data)
+    }
+
+    func close() { try? handle.close() }
 }

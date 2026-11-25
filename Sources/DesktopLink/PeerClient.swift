@@ -6,6 +6,7 @@ struct LinuxProject: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let name: String
     let canBuild: Bool
+    var presets: [LinuxJobPreset]? = nil
 }
 
 struct LinuxPeer: Codable, Identifiable, Equatable, Sendable {
@@ -22,6 +23,8 @@ struct PeerRequest: Encodable, Sendable {
     var path: String?
     var url: String?
     var text: String?
+    var job: String?
+    var preset: String?
 }
 
 struct PeerReply: Decodable, Sendable {
@@ -45,6 +48,11 @@ struct PeerReply: Decodable, Sendable {
     let sha256: String?
     let desktopOutput: String?
     let desktopStatus: String?
+    let clipboardAvailable: Bool?
+    let job: LinuxJob?
+    let jobs: [LinuxJob]?
+    let jobProtocol: Int?
+    let transferProtocol: Int?
 
     var desktopAvailability: DesktopAvailability? { desktopStatus.flatMap(DesktopAvailability.init(rawValue:)) }
 }
@@ -68,7 +76,7 @@ enum PeerClient {
     private static let receiverCommand = ".local/bin/desktop-link-peer"
 
     struct Failure: LocalizedError {
-        enum Kind { case other, untrustedHost, changedHost, authentication, missingReceiver }
+        enum Kind { case other, unreachable, untrustedHost, changedHost, authentication, missingReceiver, receiverError }
         let reason: String
         var kind: Kind = .other
         var errorDescription: String? { reason }
@@ -104,9 +112,9 @@ enum PeerClient {
         let line = text.split(whereSeparator: \.isNewline).last
         guard let line, let reply = try? JSONDecoder().decode(PeerReply.self, from: Data(line.utf8)),
               reply.version == action.version else {
-            throw Failure(reason: "The Linux receiver returned an incompatible response.")
+            throw Failure(reason: "The Linux receiver returned an incompatible response.", kind: .receiverError)
         }
-        guard reply.ok else { throw Failure(reason: reply.error ?? "The Linux action failed.") }
+        guard reply.ok else { throw Failure(reason: reply.error ?? "The Linux action failed.", kind: .receiverError) }
         if let artifact = reply.artifact, !artifact.verified {
             throw Failure(reason: "The returned build file failed verification.")
         }
@@ -127,6 +135,20 @@ enum PeerClient {
             _ = try exchange(script, on: address, sshConfig: sshConfig,
                              command: "python3 -c '\(installReceiver)' \(digest)", timeout: 12)
             return try request(hello, on: address, sshConfig: sshConfig)
+        }
+    }
+
+    static func checkConnection(_ address: String) -> ConnectionCheck {
+        do {
+            let reply = try request(PeerRequest(action: "pair"), on: address)
+            guard reply.system == "Linux" else {
+                throw Failure(reason: "The receiver did not identify a Linux system.", kind: .receiverError)
+            }
+            return ConnectionCheck(receiver: reply)
+        } catch let error as Failure {
+            return ConnectionCheck(failure: error)
+        } catch {
+            return ConnectionCheck(failure: Failure(reason: error.localizedDescription))
         }
     }
 
@@ -194,17 +216,76 @@ enum PeerClient {
             throw Failure(reason: "Verify the Linux host fingerprint in Terminal, then pair again.", kind: .untrustedHost)
         }
         if ssh.terminationStatus == 126, command == receiverCommand {
-            throw Failure(reason: "The Linux receiver exists but couldn’t run. Check its permissions on Linux.")
+            throw Failure(reason: "The Linux receiver exists but couldn’t run. Check its permissions on Linux.", kind: .receiverError)
         }
-        if text.contains("Permission denied") {
+        if ssh.terminationStatus == 255, text.contains("Permission denied") {
             throw Failure(reason: "This Linux account needs an SSH key. Check key sign-in in Terminal, then try again.", kind: .authentication)
         }
         switch ssh.terminationStatus {
         case 127 where command == receiverCommand && text.contains(receiverCommand):
             throw Failure(reason: "The Handoff Fox receiver is missing on Linux.", kind: .missingReceiver)
-        case 83, 127: throw Failure(reason: "Install Python 3.9 or later on Linux, then try again.")
+        case 83, 127: throw Failure(reason: "Install Python 3.9 or later on Linux, then try again.", kind: .receiverError)
         case 85: throw Failure(reason: "The Linux receiver transfer failed verification. Try pairing again.")
-        default: throw Failure(reason: "SSH couldn’t reach the device. Check that it’s awake and connected to your network, then retry.")
+        default: throw Failure(reason: "SSH couldn’t reach the device. Check that it’s awake and connected to your network, then retry.",
+                               kind: ssh.terminationStatus == 255 || ssh.terminationReason == .uncaughtSignal ? .unreachable : .receiverError)
         }
     }
+}
+
+struct ConnectionCheck: Sendable {
+    enum State: Equatable, Sendable {
+        case ready, actionNeeded, unchecked
+    }
+
+    struct Step: Identifiable, Sendable {
+        let name: String
+        let state: State
+        let detail: String
+        var id: String { name }
+    }
+
+    let steps: [Step]
+    let offersHostVerification: Bool
+
+    init(receiver: PeerReply) {
+        let display: Step
+        switch receiver.desktopAvailability {
+        case .ready: display = Step(name: "Desktop session", state: .ready, detail: "Hyprland and Gliff ready")
+        case .needsGliff: display = Step(name: "Desktop session", state: .actionNeeded, detail: "Install Gliff on Linux")
+        case .needsHyprland: display = Step(name: "Desktop session", state: .actionNeeded, detail: "Sign in to Hyprland on Linux")
+        case nil: display = Step(name: "Desktop session", state: .unchecked, detail: "Update the Linux receiver to check")
+        }
+        let clipboard: Step
+        switch receiver.clipboardAvailable {
+        case true?: clipboard = Step(name: "Clipboard tools", state: .ready, detail: "Linux desktop clipboard available")
+        case false?: clipboard = Step(name: "Clipboard tools", state: .actionNeeded, detail: "Check the Linux desktop session and clipboard tools")
+        case nil: clipboard = Step(name: "Clipboard tools", state: .unchecked, detail: "Update the Linux receiver to check")
+        }
+        steps = Self.readySteps + [display, clipboard]
+        offersHostVerification = false
+    }
+
+    init(failure: PeerClient.Failure) {
+        let phase: Int
+        switch failure.kind {
+        case .untrustedHost, .changedHost: phase = 1
+        case .authentication: phase = 2
+        case .receiverError, .missingReceiver: phase = 3
+        case .other, .unreachable: phase = 0
+        }
+        steps = Self.readySteps.enumerated().map { index, step in
+            if index < phase { return step }
+            if index == phase { return Step(name: step.name, state: .actionNeeded, detail: failure.reason) }
+            return Step(name: step.name, state: .unchecked, detail: "Complete the earlier checks first")
+        } + [Step(name: "Desktop session", state: .unchecked, detail: "Check the receiver first"),
+             Step(name: "Clipboard tools", state: .unchecked, detail: "Check the receiver first")]
+        offersHostVerification = failure.kind == .untrustedHost
+    }
+
+    private static let readySteps = [
+        Step(name: "Network", state: .ready, detail: "SSH endpoint reached"),
+        Step(name: "Host identity", state: .ready, detail: "SSH host key verified"),
+        Step(name: "Key sign-in", state: .ready, detail: "Linux account authenticated"),
+        Step(name: "Linux receiver", state: .ready, detail: "Receiver replied")
+    ]
 }

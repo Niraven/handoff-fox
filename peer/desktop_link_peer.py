@@ -3,6 +3,7 @@
 
 import base64
 from collections import deque
+from contextlib import contextmanager
 import fcntl
 from hashlib import sha256
 from html.parser import HTMLParser
@@ -17,6 +18,7 @@ import shutil
 import signal
 import socket
 import ssl
+from stat import S_ISREG
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,9 @@ MAX_ARTIFACT = 2 * 1024 * 1024
 MAX_CLIPBOARD = 64 * 1024
 MAX_FILE = 128 * 1024 * 1024
 OUTBOX = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "desktop-link/outbox"
+JOBS = OUTBOX.parent / "jobs"
+JOB_TIMEOUT = 900
+ACTIVE_JOB_STATES = {"queued", "running", "cancelling"}
 
 
 class RequestError(Exception):
@@ -47,7 +52,10 @@ def projects():
 
 
 def display(project):
-    return {key: project[key] for key in ("id", "name")} | {"canBuild": bool(project.get("build"))}
+    return {key: project[key] for key in ("id", "name")} | {
+        "canBuild": bool(project.get("build")),
+        "presets": [{"id": preset["id"], "name": preset["name"]} for preset in job_presets(project)],
+    }
 
 
 def save_project(name, path):
@@ -74,7 +82,7 @@ def save_project(name, path):
     return {"projects": [display(item) for item in entries]}
 
 
-def open_desktop(target):
+def launch_graphical(arguments, directory=None):
     # OpenSSH sessions normally have no display variables. Use the Linux user's
     # graphical service manager or the current graphical session, if available.
     if shutil.which("systemd-run"):
@@ -83,16 +91,40 @@ def open_desktop(target):
         if session.returncode == 0:
             found = subprocess.run(
                 ["systemd-run", "--user", "--quiet", "--collect", "--property=Type=exec",
-                 "--property=ExitType=cgroup", "--", "xdg-open", str(target)],
+                 "--property=ExitType=cgroup",
+                 *([f"--working-directory={directory}"] if directory else []), "--", *arguments],
                 capture_output=True, timeout=4, check=False,
             )
             if found.returncode == 0:
                 return
-    if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"):
-        subprocess.Popen(["xdg-open", str(target)], stdin=subprocess.DEVNULL,
+    env = graphical_environment()
+    if env.get("WAYLAND_DISPLAY") or env.get("DISPLAY"):
+        subprocess.Popen(arguments, cwd=directory, env=env, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         return
     raise RequestError("Open a graphical Linux session before using this action.")
+
+
+def open_desktop(target):
+    launch_graphical(["xdg-open", str(target)])
+
+
+def open_terminal(directory):
+    candidates = [
+        ("xdg-terminal-exec", [f"--dir={directory}"]),
+        ("foot", [f"--working-directory={directory}"]),
+        ("alacritty", ["--working-directory", str(directory)]),
+        ("ghostty", [f"--working-directory={directory}"]),
+        ("kitty", ["--directory", str(directory)]),
+        ("gnome-terminal", [f"--working-directory={directory}"]),
+        ("konsole", ["--workdir", str(directory)]),
+        ("xterm", []),
+    ]
+    for program, arguments in candidates:
+        if executable := shutil.which(program):
+            launch_graphical([executable, *arguments], directory)
+            return
+    raise RequestError("Install a graphical terminal on Linux before opening this project.")
 
 
 def storage():
@@ -157,7 +189,7 @@ def queue_for_mac(kind, value=None):
                 raise
     elif kind == "link":
         item["url"] = browser_url(value)
-    elif kind != "projects":
+    elif kind not in {"projects", "desktop"}:
         raise RequestError("Unknown handoff.")
     try:
         temporary.write_text(json.dumps(item))
@@ -177,13 +209,14 @@ def copy_file(source, target, expected=None):
         if total > MAX_FILE or (expected is not None and total > expected):
             raise RequestError("Files can be up to 128 MiB.")
         digest.update(buffer)
-        target.write(buffer)
+        if target is not None:
+            target.write(buffer)
     if expected is not None and total != expected:
         raise RequestError("The transfer stopped before all bytes arrived.")
     return total, digest.hexdigest()
 
 
-def upload_file():
+def upload_file(durable=False):
     header = json.loads(sys.stdin.buffer.readline(8192))
     name = file_name(header["name"])
     token = ticket_id(header["id"])
@@ -191,6 +224,9 @@ def upload_file():
     volume = header["volume"]
     if type(size) is not int or not 0 <= size <= MAX_FILE:
         raise RequestError("Files can be up to 128 MiB.")
+    expected = header.get("sha256")
+    if durable and (not isinstance(expected, str) or not re.fullmatch("[0-9a-f]{64}", expected)):
+        raise RequestError("The file checksum is missing or invalid.")
     if volume == "home":
         folder = Path.home() / "Downloads/Handoff Fox"
     elif volume == "workspace" and any(item["id"] == "workspace" for item in storage()):
@@ -207,11 +243,133 @@ def upload_file():
     with tempfile.NamedTemporaryFile(dir=folder) as temp:
         _, digest = copy_file(sys.stdin.buffer, temp, size)
         temp.flush()
+        if durable:
+            if digest != expected:
+                raise RequestError("The file checksum did not match.")
+            os.fsync(temp.fileno())
+            return commit_upload(folder, Path(temp.name), token, name, volume, size, digest)
         os.link(temp.name, destination)
     return {"path": str(destination), "sha256": digest}
 
 
-def clipboard_tools():
+def transfer_receipts():
+    receipts = OUTBOX.with_name("receipts")
+    receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return receipts
+
+
+def save_transfer_receipt(path, value):
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as temp:
+        temporary = Path(temp.name)
+        try:
+            json.dump(value, temp)
+            temp.flush()
+            os.fsync(temp.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def commit_upload(folder, staged, token, name, volume, size, digest):
+    receipts = transfer_receipts()
+    receipt = receipts / f"file-{token}.json"
+    manifest = {"name": name, "volume": volume, "size": size, "sha256": digest}
+    path = Path(name)
+    collision = folder / f"{path.stem}-{token}{path.suffix}"
+
+    # Record the destination before publishing the file. A retry can verify
+    # the same file after a lost receipt or an interrupted SSH command.
+    with (receipts / "files.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = json.loads(receipt.read_text()) if receipt.exists() else None
+        if state is not None:
+            if state.get("manifest") != manifest:
+                raise RequestError("This transfer ticket belongs to a different file.")
+            destination = Path(state["path"])
+            if destination not in {folder / name, collision}:
+                raise RequestError("The destination for this transfer has changed.")
+            if state.get("delivered"):
+                return {"path": str(destination), "sha256": digest}
+        else:
+            destination = folder / name
+            if os.path.lexists(destination):
+                destination = collision
+            state = {"manifest": manifest, "path": str(destination), "delivered": False}
+            save_transfer_receipt(receipt, state)
+
+        try:
+            os.link(staged, destination)
+        except FileExistsError:
+            # Never follow a symlink or read a special file when recovering
+            # an interrupted commit at a planned destination.
+            descriptor = os.open(destination, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as existing:
+                if not S_ISREG(os.fstat(existing.fileno()).st_mode):
+                    raise RequestError("The transfer destination is occupied.")
+                _, actual = copy_file(existing, None, size)
+            if actual != digest:
+                raise RequestError("A different file occupies the transfer destination.")
+        state["delivered"] = True
+        save_transfer_receipt(receipt, state)
+        return {"path": str(destination), "sha256": digest}
+
+
+def deliver_link(value, ticket):
+    token = ticket_id(ticket)
+    url = browser_url(value)
+    digest = sha256(url.encode()).hexdigest()
+    receipts = transfer_receipts()
+    receipt = receipts / f"link-{token}.json"
+    with (receipts / "links.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if receipt.exists():
+            state = json.loads(receipt.read_text())
+            if state.get("sha256") != digest:
+                raise RequestError("This transfer ticket belongs to a different link.")
+            if state.get("delivered"):
+                return {}
+            raise RequestError("The earlier link attempt may have opened. Send the link again to open a new copy.")
+        state = {"sha256": digest, "delivered": False}
+        save_transfer_receipt(receipt, state)
+        try:
+            open_desktop(url)
+        except RequestError:
+            receipt.unlink(missing_ok=True)
+            raise
+        state["delivered"] = True
+        save_transfer_receipt(receipt, state)
+        return {}
+
+
+def reveal_upload(ticket):
+    token = ticket_id(ticket)
+    path = transfer_receipts() / f"file-{token}.json"
+    if not path.is_file():
+        raise RequestError("The saved transfer receipt is unavailable on Linux.")
+    state = json.loads(path.read_text())
+    if not state.get("delivered"):
+        raise RequestError("This file has not finished transferring.")
+    folder = Path(state["path"]).parent
+    if not folder.is_dir():
+        raise RequestError("The transfer destination is unavailable on Linux.")
+    open_desktop(folder)
+    return {}
+
+
+def upload_status(ticket, digest):
+    token = ticket_id(ticket)
+    path = transfer_receipts() / f"file-{token}.json"
+    if not path.is_file():
+        return {}
+    state = json.loads(path.read_text())
+    if state["manifest"]["sha256"] != digest:
+        raise RequestError("This transfer ticket belongs to a different file.")
+    if not state.get("delivered"):
+        return {}
+    return {"path": state["path"], "sha256": digest}
+
+
+def graphical_environment():
     env = os.environ.copy()
     if not (env.get("WAYLAND_DISPLAY") or env.get("DISPLAY")) and shutil.which("systemctl"):
         session = subprocess.run(["systemctl", "--user", "show-environment"],
@@ -220,6 +378,11 @@ def clipboard_tools():
             name, _, value = line.partition("=")
             if name in {"WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR"}:
                 env[name] = value
+    return env
+
+
+def clipboard_tools():
+    env = graphical_environment()
     if env.get("WAYLAND_DISPLAY") and shutil.which("wl-copy") and shutil.which("wl-paste"):
         return (["wl-copy", "--type", "text/plain;charset=utf-8"],
                 ["wl-paste", "--no-newline", "--type", "text"], ["wl-paste", "--list-types"], env)
@@ -433,6 +596,347 @@ def build_project(project, directory):
     return receipt
 
 
+def job_presets(project):
+    configured = project.get("presets", [])
+    presets = []
+    if project.get("build"):
+        presets.append({"id": "build", "name": "Build", "argv": project["build"],
+                        "artifact": project.get("artifact")})
+    if isinstance(configured, list):
+        presets.extend(configured)
+    known = set()
+    for preset in presets:
+        if not isinstance(preset, dict):
+            continue
+        key, name, argv = (preset.get(field) for field in ("id", "name", "argv"))
+        if (not isinstance(key, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", key)
+                or key in known or not isinstance(name, str) or not name.strip() or len(name) > 64
+                or not isinstance(argv, list) or not argv or not argv[0]
+                or not all(isinstance(arg, str) and "\x00" not in arg for arg in argv)):
+            continue
+        known.add(key)
+        yield preset
+
+
+def job_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value):
+        raise RequestError("Invalid job ID.")
+    return value
+
+
+def atomic_job_file(path, data):
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temporary:
+        try:
+            temporary.write(data)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            os.replace(temporary.name, path)
+        finally:
+            Path(temporary.name).unlink(missing_ok=True)
+
+
+@contextmanager
+def job_transaction():
+    JOBS.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (JOBS / ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def write_job(directory, job, **changes):
+    job.update(changes, updatedAt=time.time())
+    atomic_job_file(directory / "job.json", json.dumps(job).encode())
+    # Persist the renamed directory entry as well as the file content.
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return job
+
+
+def read_job(directory):
+    try:
+        return json.loads((directory / "job.json").read_text())
+    except FileNotFoundError as error:
+        raise RequestError("This job was not found on Linux.") from error
+
+
+def recover_job(directory, job):
+    if job["state"] not in ACTIVE_JOB_STATES:
+        return job
+    with (directory / "worker.lock").open("a") as owner:
+        try:
+            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return job
+        return write_job(directory, job, state="failed", error="The Linux job worker stopped.")
+
+
+def project_build_lock(project_id):
+    return CONFIG.parent / f"build-{sha256(project_id.encode()).hexdigest()}.lock"
+
+
+def start_job(payload):
+    identifier = job_id(payload.get("job"))
+    directory = JOBS / identifier
+    project_id = payload.get("project")
+    preset_id = payload.get("preset", "build")
+    with job_transaction():
+        if (directory / "job.json").is_file():
+            job = read_job(directory)
+            if (job["project"], job["preset"]) != (project_id, preset_id):
+                raise RequestError("This job ID already refers to another project or preset.")
+            return recover_job(directory, job)
+
+        project = next((entry for entry in projects() if entry["id"] == project_id), None)
+        if project is None:
+            raise RequestError("This project is no longer saved on Linux.")
+        preset = next((entry for entry in job_presets(project) if entry["id"] == preset_id), None)
+        if preset is None:
+            raise RequestError("This job preset is not configured on Linux.")
+        cwd = Path(project["path"]).expanduser().resolve(strict=True)
+        if not cwd.is_dir():
+            raise RequestError("The project folder is unavailable.")
+        spec = {"cwd": str(cwd), "argv": preset["argv"], "artifact": preset.get("artifact")}
+        if spec["artifact"] is not None and not isinstance(spec["artifact"], str):
+            raise RequestError("The Linux artifact must be a file path.")
+        with project_build_lock(project_id).open("a") as project_lock:
+            try:
+                fcntl.flock(project_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise RequestError("This project already has a build or job running.") from error
+
+            directory.mkdir(exist_ok=True, mode=0o700)
+            created = {"id": identifier, "project": project_id, "preset": preset_id,
+                       "title": f"{project['name']} · {preset['name']}", "createdAt": time.time()}
+            with (directory / "worker.lock").open("a") as worker_lock:
+                fcntl.flock(worker_lock, fcntl.LOCK_EX)
+                result = write_job(directory, created, state="queued")
+                descriptors = (worker_lock.fileno(), project_lock.fileno())
+                try:
+                    # Pass the approved snapshot without keeping the command in the
+                    # job history or making its arguments visible in the worker argv.
+                    with tempfile.TemporaryFile(dir=directory) as specification:
+                        specification.write(json.dumps(spec).encode())
+                        specification.seek(0)
+                        subprocess.Popen(
+                            [sys.executable, str(Path(__file__).resolve()), "--run-job", identifier,
+                             *(str(fd) for fd in descriptors)],
+                            stdin=specification, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True, pass_fds=descriptors,
+                        )
+                except (OSError, subprocess.SubprocessError):
+                    result = write_job(directory, result, state="failed",
+                                       error="The Linux job worker could not start.")
+                return result
+
+
+def stop_job_group(pid, signum):
+    try:
+        os.killpg(pid, signum)
+    except ProcessLookupError:
+        pass
+
+
+def read_job_file(path, limit, parent=None):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    with os.fdopen(descriptor, "rb") as file:
+        if not S_ISREG(os.fstat(file.fileno()).st_mode):
+            raise OSError("Expected a regular job file.")
+        return file.read(limit + 1)
+
+
+def collect_job_output(process, directory, supervisor):
+    tail = bytearray()
+    length = 0
+    saved_length = 0
+    last_save = time.monotonic()
+    started = last_save
+    exited = None
+    ended = False
+    error = None
+    try:
+        while True:
+            now = time.monotonic()
+            state = read_job(directory)["state"]
+            if state == "cancelling":
+                stop_job_group(process.pid, signal.SIGTERM)
+                time.sleep(0.3)
+                break
+            if now - started >= JOB_TIMEOUT:
+                error = f"The job exceeded the {JOB_TIMEOUT}-second limit."
+                break
+            # Observe exit without reaping the process-group leader. Its ID stays
+            # allocated until we've stopped leftover descendants.
+            if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
+                exited = now if exited is None else exited
+                if ended:
+                    break
+                if now - exited > 1:
+                    error = "The preset left a process running after exit."
+                    break
+            readable = select.select([supervisor] if ended else [supervisor, process.stdout],
+                                     [], [], 0.12)[0]
+            if supervisor in readable:
+                error = "The Linux job supervisor stopped."
+                break
+            if process.stdout in readable:
+                chunk = os.read(process.stdout.fileno(), 8192)
+                if chunk:
+                    length += len(chunk)
+                    tail.extend(chunk)
+                    del tail[:-MAX_OUTPUT]
+                else:
+                    ended = True
+            if length != saved_length and now - last_save >= 0.4:
+                atomic_job_file(directory / "output.log", tail)
+                last_save, saved_length = now, length
+    finally:
+        try:
+            stop_job_group(process.pid, signal.SIGKILL)
+        except PermissionError:
+            # Darwin reports EPERM for a group containing only its zombie
+            # leader. When descendants remain it still delivers the signal.
+            if sys.platform != "darwin" or not os.waitid(
+                os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT,
+            ):
+                raise
+        finally:
+            code = process.wait()
+    atomic_job_file(directory / "output.log", tail)
+    return code, length > MAX_OUTPUT, error
+
+
+def save_job_artifact(directory, root, name):
+    if not name:
+        return {}
+    try:
+        path = Path(name)
+        if path.is_absolute() or ".." in path.parts:
+            raise RequestError("The configured job artifact must be relative to the project.")
+        visible_name = file_name(path.name)
+        # Open each component relative to its already-open parent. A linked
+        # output folder must not turn a project artifact into a read elsewhere.
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent = os.open(root, directory_flags)
+        try:
+            for part in path.parts[:-1]:
+                child = os.open(part, directory_flags, dir_fd=parent)
+                os.close(parent)
+                parent = child
+            data = read_job_file(visible_name, MAX_ARTIFACT, parent)
+        finally:
+            os.close(parent)
+        if len(data) > MAX_ARTIFACT:
+            raise RequestError("The job artifact is above the 2 MiB transfer limit.")
+        atomic_job_file(directory / "artifact.bin", data)
+        return {"artifactName": visible_name, "artifactSha256": sha256(data).hexdigest()}
+    except RequestError as error:
+        return {"artifactError": str(error)}
+    except (OSError, ValueError):
+        return {"artifactError": "The configured job artifact could not be collected."}
+
+
+def run_job(identifier, worker_fd, project_fd):
+    # Only this supervisor owns the write end. The monitor survives a signal
+    # to the supervisor's PID or process group and observes EOF immediately.
+    read_end, write_end = os.pipe()
+    with os.fdopen(read_end, "rb"), os.fdopen(write_end, "wb"):
+        with subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--watch-job", identifier,
+             str(worker_fd), str(project_fd), str(read_end)],
+            stdin=sys.stdin, start_new_session=True, pass_fds=(worker_fd, project_fd, read_end),
+        ) as monitor:
+            monitor.wait()
+
+
+def watch_job(identifier, worker_fd, project_fd, supervisor_fd):
+    directory = JOBS / job_id(identifier)
+    # These are inherited open file descriptions from start_job. Keep both
+    # locks held through the final job state write.
+    with (os.fdopen(worker_fd, "rb") as owner, os.fdopen(project_fd, "rb") as project_lock,
+          os.fdopen(supervisor_fd, "rb") as supervisor):
+        if not os.path.samestat(os.fstat(owner.fileno()), (directory / "worker.lock").stat()):
+            return
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with job_transaction():
+            job = read_job(directory)
+            if job["state"] == "cancelling":
+                write_job(directory, job, state="cancelled")
+                return
+            if job["state"] != "queued":
+                return
+            if select.select([supervisor], [], [], 0)[0]:
+                write_job(directory, job, state="failed", error="The Linux job supervisor stopped.")
+                return
+            write_job(directory, job, state="running")
+
+        started = time.monotonic()
+        fields = {}
+        try:
+            spec = json.load(sys.stdin)
+            env = {key: os.environ[key] for key in
+                   ("HOME", "USER", "PATH", "LANG", "LC_ALL", "TMPDIR", "XDG_CACHE_HOME")
+                   if key in os.environ}
+            with subprocess.Popen(
+                spec["argv"], cwd=spec["cwd"], env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+                pass_fds=(project_lock.fileno(),),
+            ) as process:
+                code, truncated, error = collect_job_output(process, directory, supervisor)
+            fields.update(exitCode=code, truncated=truncated)
+            if error:
+                fields["error"] = error
+            elif code == 0 and read_job(directory)["state"] != "cancelling":
+                fields.update(save_job_artifact(directory, Path(spec["cwd"]), spec.get("artifact")))
+        except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError):
+            fields["error"] = "The Linux job could not run. Check the configured executable and folder."
+
+        with job_transaction():
+            job = read_job(directory)
+            if job["state"] == "cancelling":
+                fields = {key: value for key, value in fields.items() if key in {"exitCode", "truncated"}}
+                state = "cancelled"
+            else:
+                state = "succeeded" if fields.get("exitCode") == 0 and not fields.get("error") else "failed"
+            write_job(directory, job, state=state, elapsedMs=round((time.monotonic() - started) * 1000),
+                      **fields)
+
+
+def job_request(action, payload):
+    if action == "job-start":
+        return {"job": start_job(payload)}
+    with job_transaction():
+        if action == "job-list":
+            records = sorted(JOBS.glob("*/job.json"), key=lambda path: path.stat().st_mtime_ns, reverse=True)
+            return {"jobs": [recover_job(path.parent, read_job(path.parent)) for path in records[:50]]}
+        directory = JOBS / job_id(payload.get("job"))
+        job = recover_job(directory, read_job(directory))
+        if action == "job-cancel" and job["state"] in {"queued", "running"}:
+            job = write_job(directory, job, state="cancelling")
+    if action == "job-status":
+        try:
+            output = read_job_file(directory / "output.log", MAX_OUTPUT)
+        except FileNotFoundError:
+            output = b""
+        return {"job": job, "output": output[:MAX_OUTPUT].decode(errors="replace"),
+                "truncated": job.get("truncated", False) or len(output) > MAX_OUTPUT}
+    if action == "job-artifact":
+        if job["state"] != "succeeded" or not job.get("artifactName"):
+            raise RequestError(job.get("artifactError") or "This job has no available artifact.")
+        try:
+            data = read_job_file(directory / "artifact.bin", MAX_ARTIFACT)
+        except OSError as error:
+            raise RequestError("This job artifact is no longer available.") from error
+        digest = sha256(data).hexdigest()
+        if len(data) > MAX_ARTIFACT or digest != job["artifactSha256"]:
+            raise RequestError("The saved job artifact failed its checksum check.")
+        return {"job": job, "artifact": {"name": job["artifactName"],
+                                        "data": base64.b64encode(data).decode("ascii"), "sha256": digest}}
+    return {"job": job}
+
+
 def public_addresses(host):
     records = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
     for family, _, _, _, address in records:
@@ -565,9 +1069,17 @@ def request(payload):
         raise RequestError("Update the Mac and Linux components to the same protocol version.")
     action = payload.get("action")
     if action == "pair":
+        try:
+            clipboard_tools()
+            clipboard_available = True
+        except (OSError, RequestError, subprocess.SubprocessError):
+            clipboard_available = False
         return {"name": socket.gethostname(), "system": "Linux",
                 "projects": [display(item) for item in projects()], "volumes": storage(),
-                "desktopStatus": desktop_status()}
+                "desktopStatus": desktop_status(), "clipboardAvailable": clipboard_available,
+                "jobProtocol": 1, "transferProtocol": 1}
+    if action in {"job-start", "job-list", "job-status", "job-cancel", "job-artifact"}:
+        return job_request(action, payload)
     if action == "desktop":
         status = desktop_status()
         if status == "needsHyprland":
@@ -586,6 +1098,12 @@ def request(payload):
     if action == "open-link":
         open_desktop(browser_url(payload.get("url")))
         return {}
+    if action == "deliver-link":
+        return deliver_link(payload.get("url"), payload.get("project"))
+    if action == "reveal-upload":
+        return reveal_upload(payload.get("project"))
+    if action == "upload-status":
+        return upload_status(payload.get("project"), payload.get("text"))
     if action == "pending":
         deadline_at = time.monotonic() + 18
         while True:
@@ -608,7 +1126,7 @@ def request(payload):
             return scrape(payload.get("url"))
         finally:
             signal.alarm(0)
-    if action in {"open", "build"}:
+    if action in {"open", "open-terminal", "build"}:
         project = next((entry for entry in projects() if entry["id"] == payload.get("project")), None)
         if not project:
             raise RequestError("This project is no longer saved on Linux.")
@@ -616,14 +1134,16 @@ def request(payload):
         if not directory.is_dir():
             raise RequestError("The project folder is unavailable.")
         if action == "build":
-            key = sha256(project["id"].encode()).hexdigest()
-            with (CONFIG.parent / f"build-{key}.lock").open("a") as lock:
+            with project_build_lock(project["id"]).open("a") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError as error:
                     raise RequestError("This project already has a build running.") from error
                 return build_project(project, directory)
-        open_desktop(directory)
+        if action == "open-terminal":
+            open_terminal(directory)
+        else:
+            open_desktop(directory)
         return {"title": project["name"]}
     raise RequestError("Unknown Handoff Fox action.")
 
@@ -639,6 +1159,12 @@ def end_clipboard_stream(_signum, _frame):
 def main():
     signal.signal(signal.SIGALRM, deadline)
     os.umask(0o077)
+    if len(sys.argv) == 5 and sys.argv[1] == "--run-job":
+        run_job(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
+        return
+    if len(sys.argv) == 6 and sys.argv[1] == "--watch-job":
+        watch_job(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]))
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--clipboard-event":
         try:
             clipboard_event(Path(sys.argv[2]))
@@ -665,8 +1191,8 @@ def main():
         return
     try:
         args = sys.argv[1:]
-        if args == ["--upload"]:
-            result = upload_file()
+        if args in (["--upload"], ["--upload-ticket"]):
+            result = upload_file(durable=args == ["--upload-ticket"])
         elif len(args) in {2, 3} and args[0] == "--queue":
             result = {"handoffs": [queue_for_mac(args[1], args[2] if len(args) == 3 else None)]}
         else:

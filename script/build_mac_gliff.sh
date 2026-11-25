@@ -58,7 +58,7 @@ install -m 644 "$stage/source/NOTICE" "$candidate/Contents/Resources/Notices/mac
 /usr/bin/codesign --force --sign - "$candidate"
 /usr/bin/codesign --verify --deep --strict "$candidate"
 help="$("$candidate/Contents/MacOS/mac-gliff" --help)"
-for option in --window-title --headless --output --no-clipboard --no-audio; do
+for option in --window-title --headless --output --no-clipboard --no-audio --actual-size; do
     grep -Fq -- "$option" <<< "$help"
 done
 mkdir -p "$cache"

@@ -14,13 +14,32 @@ final class RemoteDesktop: ObservableObject {
     @Published private(set) var activeHost: String?
     @Published private(set) var opening = false
     @Published private(set) var message: String?
+    @Published private(set) var lastHost: String?
     private var app: NSRunningApplication?
     private var mode: DesktopMode?
+    private var actualSize = false
     private var observer: NSObjectProtocol?
+    private var beforeSleep: (host: String, mode: DesktopMode, actualSize: Bool)?
+    private let defaults: UserDefaults
 
-    func open(_ display: DesktopMode, host: String, replacing: Bool = false) async {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        lastHost = defaults.string(forKey: "lastDesktopHost").flatMap { PeerClient.validAddress($0) ? $0 : nil }
+    }
+
+    func preferredMode(for host: String) -> DesktopMode {
+        let stored = defaults.dictionary(forKey: "desktopModesByPeer")?[host] as? String
+        return stored.flatMap(DesktopMode.init(rawValue:)) ?? .mirror
+    }
+
+    func prefersActualSize(for host: String) -> Bool {
+        defaults.dictionary(forKey: "desktopActualSizeByPeer")?[host] as? Bool ?? false
+    }
+
+    func open(_ display: DesktopMode, host: String, replacing: Bool = false, actualSize: Bool = false) async {
         guard !opening else { return }
-        if !replacing, activeHost == host, mode == display, let app, !app.isTerminated {
+        if !replacing, activeHost == host, mode == display, self.actualSize == actualSize,
+           let app, !app.isTerminated {
             app.activate(options: [])
             return
         }
@@ -43,7 +62,9 @@ final class RemoteDesktop: ObservableObject {
                                                     attributes: [.posixPermissions: 0o700])
             let config = NSWorkspace.OpenConfiguration()
             config.createsNewApplicationInstance = true
-            var arguments = ["--window-title", "Handoff Fox — \(display.rawValue)", "--no-clipboard", "--no-audio"]
+            let title = "Handoff Fox — \(display.rawValue)" + (actualSize ? " · Actual Size" : "")
+            var arguments = ["--window-title", title, "--no-clipboard", "--no-audio"]
+            if actualSize { arguments.append("--actual-size") }
             switch display {
             case .mirror:
                 if let output = peer.desktopOutput { arguments += ["--output", output] }
@@ -58,11 +79,23 @@ final class RemoteDesktop: ObservableObject {
             environment["XDG_STATE_HOME"] = profile.appendingPathComponent("state").path
             config.environment = environment
             let next = try await NSWorkspace.shared.openApplication(at: viewer, configuration: config)
+            watchExit()
+            guard !next.isTerminated else {
+                throw PeerClient.Failure(reason: "The desktop viewer closed while starting. Try opening the desktop again.")
+            }
             let last = app
             app = next
             mode = display
+            self.actualSize = actualSize
             activeHost = host
-            watchExit()
+            var modes = defaults.dictionary(forKey: "desktopModesByPeer") ?? [:]
+            modes[host] = display.rawValue
+            defaults.set(modes, forKey: "desktopModesByPeer")
+            var sizes = defaults.dictionary(forKey: "desktopActualSizeByPeer") ?? [:]
+            sizes[host] = actualSize
+            defaults.set(sizes, forKey: "desktopActualSizeByPeer")
+            defaults.set(host, forKey: "lastDesktopHost")
+            lastHost = host
             last?.terminate()
         } catch {
             message = error.localizedDescription
@@ -70,16 +103,36 @@ final class RemoteDesktop: ObservableObject {
     }
 
     func disconnect() {
+        beforeSleep = nil
         app?.terminate()
     }
 
     func reconnect() async {
         guard let mode, let activeHost else { return }
-        await open(mode, host: activeHost, replacing: true)
+        await open(mode, host: activeHost, replacing: true, actualSize: actualSize)
     }
 
     func showOrOpen(host: String) async {
-        await open(activeHost == host ? (mode ?? .mirror) : .mirror, host: host)
+        let sameHost = activeHost == host
+        await open(sameHost ? (mode ?? preferredMode(for: host)) : preferredMode(for: host),
+                   host: host, actualSize: sameHost ? actualSize : prefersActualSize(for: host))
+    }
+
+    func prepareForSleep() {
+        if let activeHost, let mode, app?.isTerminated == false {
+            beforeSleep = (activeHost, mode, actualSize)
+        } else {
+            beforeSleep = nil
+        }
+    }
+
+    func recoverAfterWake() async {
+        let session = beforeSleep
+        beforeSleep = nil
+        // A surviving viewer owns the stream retry. Replace only a viewer that exited while asleep.
+        guard let session, !opening, app?.isTerminated != false,
+              activeHost == nil || activeHost == session.host else { return }
+        await open(session.mode, host: session.host, actualSize: session.actualSize)
     }
 
     private func watchExit() {
@@ -93,6 +146,7 @@ final class RemoteDesktop: ObservableObject {
                 self.app = nil
                 self.activeHost = nil
                 self.mode = nil
+                self.actualSize = false
             }
         }
     }
@@ -159,13 +213,18 @@ struct OpenDesktopMenu: View {
 
     @ViewBuilder private var choices: some View {
         if let address {
-            Button("Mirror screen") { Task { await desktop.open(.mirror, host: address) } }
-            Button("Private screen") { Task { await desktop.open(.privateScreen, host: address) } }
+            Button("Mirror screen · Fit to Window") { Task { await desktop.open(.mirror, host: address) } }
+            Button("Private screen · Fit to Window") { Task { await desktop.open(.privateScreen, host: address) } }
+            Menu("Actual Size") {
+                Button("Mirror screen") { Task { await desktop.open(.mirror, host: address, actualSize: true) } }
+                Button("Private screen") { Task { await desktop.open(.privateScreen, host: address, actualSize: true) } }
+            }
             if desktop.activeHost == address {
                 Divider()
                 Button("Reconnect") { Task { await desktop.reconnect() } }
                 Button("Disconnect") { desktop.disconnect() }
             }
+            Text("Shift + Esc releases the keyboard")
         }
     }
 }

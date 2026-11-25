@@ -4,7 +4,7 @@
 
 Keep your Linux workspace running while you work on your Mac. Click the fox in the menu bar to open the desktop, send a file or link, or jump back into a saved project.
 
-[Build the preview](docs/SETUP.md) · [Read the release notes](https://github.com/Niraven/handoff-fox/releases/tag/v0.1.0-preview.1) · [Tell us what works on your setup](https://github.com/Niraven/handoff-fox/issues/new?template=preview-feedback.md)
+[Build from source](docs/SETUP.md) · [First preview release](https://github.com/Niraven/handoff-fox/releases/tag/v0.1.0-preview.1) · [Tell us what works on your setup](https://github.com/Niraven/handoff-fox/issues/new?template=preview-feedback.md)
 
 ![Handoff Fox menu bar popover with Open Desktop, Send and projects, and Clipboard controls](docs/images/mac-menu.png)
 
@@ -12,9 +12,9 @@ Keep your Linux workspace running while you work on your Mac. Click the fox in t
 
 | When you need to… | Use Handoff Fox to… |
 | --- | --- |
-| Finish something on Linux | Mirror a running Hyprland desktop or open a separate virtual screen in the same Linux login. |
-| Move a file, link, or snippet | Send files and links between the two machines and transfer plain text through the clipboard. |
-| Pick up a project or run a job | Open a saved Linux folder or run a build preset you configured there. |
+| Finish something on Linux | Resume a Hyprland desktop in Mirror or Private Screen and keep your preferred scale. |
+| Move a file, link, or snippet | Send and retry handoffs through the Mac’s Transfer Inbox, or share plain text through the clipboard. |
+| Pick up a project or run a job | Open a saved Linux folder or start an approved build preset that keeps running if your Mac disconnects. |
 
 Pairing uses your existing SSH access. The Mac checks the Linux host key and installs a user-level receiver when needed. A Tailscale connection was used in the live desktop test. The Linux machine can also be reached through a verified SSH alias on your network.
 
@@ -30,8 +30,10 @@ This release ships source for a local build. A downloadable Mac installer needs 
 
 ## What’s next
 
-1. Resume the last desktop and verify wake and network-switch recovery.
-2. Show which handoffs are queued, delivered, or ready to retry.
-3. Put recent projects and approved Linux jobs one click from the fox.
+1. Verify physical sleep and wake, LAN-to-Tailscale recovery, and different keyboard and display setups.
+2. Time a first pairing on a clean Mac and verify which actions work on Omarchy, another Hyprland distro, and headless Linux.
+3. Choose the project license and test a Developer ID-signed, notarized Mac installer.
+
+[Read the roadmap and acceptance tests](docs/ROADMAP.md).
 
 [Development and upstream updates](docs/DEVELOPMENT.md) · [Third-party notices](dependencies/licenses/README.md)
