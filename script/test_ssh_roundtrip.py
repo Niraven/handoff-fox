@@ -115,6 +115,8 @@ def sshd_available():
         return "the sshd round trip is skipped when the tests run as root"
     if (Path.home() / ".ssh/authorized_keys").exists():
         return "an authorized_keys file already exists in this home directory"
+    if (Path.home() / REMOTE_COMMAND).exists():
+        return "a receiver is already installed in this home directory"
     if not Path("/usr/sbin/sshd").is_file() or not shutil.which("ssh") or not shutil.which("ssh-keygen"):
         return "sshd or the OpenSSH client is missing"
     if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
