@@ -7,7 +7,7 @@ trap 'rm -r -- "$check_dir"' EXIT
 source=Sources/DesktopLink
 
 swift build
-swiftc -parse-as-library "$source"/{PeerClient,LinuxJobs,Handoff,RemoteDesktop}.swift \
+swiftc -parse-as-library "$source"/{FoxDesign,PeerClient,LinuxJobs,Handoff,RemoteDesktop}.swift \
     script/ConnectionChecks.swift -o "$check_dir/connection"
 "$check_dir/connection"
 swiftc -parse-as-library "$source"/{Handoff,TransferInbox,ClipboardSync,ClipboardTransfer,PeerClient,LinuxJobs}.swift \
