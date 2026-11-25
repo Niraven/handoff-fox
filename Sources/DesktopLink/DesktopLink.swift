@@ -190,6 +190,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
         } else if let button = menuItem.button {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             Task { await model.loadActivity() }
+            Task { await workbenchModel.prewarm() }
         }
     }
 
@@ -496,6 +497,17 @@ struct LinkPanel: View {
             Button(pairing ? "Pairing…" : "Pair Linux") { pair() }
                 .buttonStyle(FoxPrimaryButtonStyle())
                 .disabled(pairing || !PeerClient.validAddress(trimmedPair))
+            if PeerClient.validAddress(trimmedPair) {
+                Button(devices.checkingPreflight ? "Checking…" : "Check this address first") {
+                    Task { await devices.preflightCheck(trimmedPair) }
+                }
+                .buttonStyle(FoxSecondaryButtonStyle(compact: true))
+                .disabled(devices.checkingPreflight)
+            }
+            if let check = devices.preflight, check.steps.contains(where: { $0.state != .ready }) {
+                FoxChecklist(steps: check.steps)
+                    .padding(.top, 1)
+            }
             Text("Check it first: ssh \(trimmedPair.isEmpty ? "user@host" : trimmedPair) should sign in without a password.")
                 .font(.system(size: 10))
                 .foregroundStyle(palette.textTertiary)

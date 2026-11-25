@@ -163,6 +163,51 @@ enum FoxMotion {
     static let fade = Animation.easeOut(duration: 0.16)
 }
 
+struct FoxChecklist: View {
+    @Environment(\.colorScheme) private var scheme
+    let steps: [ConnectionCheck.Step]
+    var compact = true
+
+    private var palette: FoxPalette { FoxPalette(scheme: scheme) }
+
+    private func symbol(_ state: ConnectionCheck.State) -> String {
+        switch state {
+        case .ready: "checkmark.circle.fill"
+        case .actionNeeded: "exclamationmark.circle.fill"
+        case .unchecked: "circle.dashed"
+        }
+    }
+
+    private func tone(_ state: ConnectionCheck.State) -> Color {
+        switch state {
+        case .ready: palette.success
+        case .actionNeeded: palette.warning
+        case .unchecked: palette.textTertiary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(steps) { step in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: symbol(step.state))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(tone(step.state))
+                    Text(step.name)
+                        .font(.system(size: compact ? 10 : 11, weight: .medium))
+                        .foregroundStyle(palette.textPrimary)
+                    Text(step.detail)
+                        .font(.system(size: compact ? 9.5 : 10.5))
+                        .foregroundStyle(palette.textTertiary)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+}
+
 enum PeerReachability: Equatable {
     case unknown
     case checking

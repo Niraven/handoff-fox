@@ -26,6 +26,9 @@ final class WorkbenchModel: ObservableObject {
     @Published private(set) var supportsJobs = false
     @Published private(set) var reachability: [String: PeerReachability] = [:]
     @Published private(set) var lastSeen: [String: Date] = [:]
+    @Published private(set) var preflight: ConnectionCheck?
+    @Published private(set) var checkingPreflight = false
+    private var lastJobRefresh = Date.distantPast
     private var transferProtocols: [String: Bool]
     private var loadedPeer: String?
     private var checkingJobs = false
@@ -72,6 +75,7 @@ final class WorkbenchModel: ObservableObject {
             notice = nil
             error = nil
             clipboardFeedback = nil
+            preflight = nil
             clearPairingError()
         }
         selected = address
@@ -149,6 +153,31 @@ final class WorkbenchModel: ObservableObject {
                 noteReachable(address)
             }
         }
+    }
+
+    /// Reports which stage a new address fails at before anything is installed,
+    /// so pairing a machine that is not ready is a diagnosis rather than an error.
+    func preflightCheck(_ address: String) async {
+        guard PeerClient.validAddress(address), !checkingPreflight else { return }
+        checkingPreflight = true
+        preflight = nil
+        defer { checkingPreflight = false }
+        let check = await Task.detached(priority: .utility) { PeerClient.checkConnection(address) }.value
+        preflight = check
+        if let failing = check.steps.first(where: { $0.state == .actionNeeded }) {
+            reachability[address] = .unreachable(String(failing.detail.prefix(52)))
+        } else if check.steps.allSatisfy({ $0.state == .ready || $0.state == .unchecked }) {
+            noteReachable(address)
+        }
+    }
+
+    /// Opens the authenticated session when the panel is shown, so the first
+    /// action does not pay for the handshake the user is waiting on.
+    func prewarm() async {
+        guard let address = selected, running == nil else { return }
+        _ = try? await Task.detached(priority: .utility) {
+            try PeerClient.request(PeerRequest(action: "pair"), on: address)
+        }.value
     }
 
     func clearPairingError() {
@@ -310,6 +339,7 @@ final class WorkbenchModel: ObservableObject {
     @discardableResult
     func refreshJobs() async -> Bool {
         guard supportsJobs, !checkingJobs, let address = selected else { return false }
+        if Date().timeIntervalSince(lastJobRefresh) < 1 { return !jobs.isEmpty }
         checkingJobs = true
         let revision = jobRevision
         defer { checkingJobs = false }
@@ -317,6 +347,7 @@ final class WorkbenchModel: ObservableObject {
             try PeerClient.request(PeerRequest(action: "job-list"), on: address)
         }.value
         guard !Task.isCancelled, selected == address, revision == jobRevision, let list = reply?.jobs else { return false }
+        lastJobRefresh = Date()
         jobs = list
         return true
     }
@@ -603,6 +634,16 @@ struct Workbench: View {
                 Text("Check it first: ssh \(target) should sign in without asking for a password.")
                     .font(.caption).foregroundStyle(.secondary)
                     .textSelection(.enabled)
+            }
+            if PeerClient.validAddress(target) {
+                Button(model.checkingPreflight ? "Checking…" : "Check this address first") {
+                    Task { await model.preflightCheck(target) }
+                }
+                .controlSize(.small)
+                .disabled(model.checkingPreflight)
+            }
+            if let check = model.preflight, check.steps.contains(where: { $0.state != .ready }) {
+                FoxChecklist(steps: check.steps, compact: false)
             }
             Toggle("Receive handoffs from this device on this Mac", isOn: $receiveWhenPaired)
                 .font(.callout)
