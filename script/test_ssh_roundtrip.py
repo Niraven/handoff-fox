@@ -89,8 +89,13 @@ class SshTransportTests(unittest.TestCase):
             "StrictModes no\n"
             "LogLevel QUIET\n"
         )
-        cls.sshd = subprocess.Popen(["sudo", "-n", "/usr/sbin/sshd", "-D", "-f", str(cls.config)],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # sshd refuses to start without its privilege separation directory, which
+        # a container or a fresh runner can lack even when /usr/sbin/sshd exists.
+        subprocess.run(["sudo", "-n", "mkdir", "-p", "/run/sshd"], capture_output=True)
+        cls.errors = cls.root / "sshd.log"
+        with cls.errors.open("wb") as log:
+            cls.sshd = subprocess.Popen(["sudo", "-n", "/usr/sbin/sshd", "-D", "-f", str(cls.config)],
+                                        stdout=log, stderr=log)
         cls.addClassCleanup(cls.stop)
         cls.addClassCleanup(cls.temporary.cleanup)
         deadline = time.monotonic() + 15
@@ -99,7 +104,8 @@ class SshTransportTests(unittest.TestCase):
                 if probe.connect_ex(("127.0.0.1", cls.port)) == 0:
                     return
             time.sleep(0.1)
-        raise unittest.SkipTest("the local sshd did not start")
+        reason = cls.errors.read_text(errors="replace").strip().splitlines()
+        raise unittest.SkipTest("the local sshd did not start" + (f": {reason[-1]}" if reason else ""))
 
     @classmethod
     def stop(cls):
