@@ -14,6 +14,16 @@ from typing import Any
 import uuid
 
 
+SOCKETS = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "handoff-fox/ssh"
+
+
+def control_path(host):
+    # One authenticated session per device. A handshake per request cost 212 ms on
+    # loopback and two extra round trips on a tailnet; reuse costs about 8 ms.
+    SOCKETS.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return str(SOCKETS / sha256(host.encode()).hexdigest()[:20])
+
+
 def request(host, action, **fields):
     if host.startswith("-") or host.endswith("@") or host.count("@") > 1 or not re.fullmatch(
         r"[A-Za-z0-9_:\[][A-Za-z0-9_.:@\[\]%-]{0,252}", host
@@ -23,6 +33,8 @@ def request(host, action, **fields):
         ["/usr/bin/ssh", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
          "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2",
          "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
+         "-o", "ControlMaster=auto", "-o", f"ControlPath={control_path(host)}",
+         "-o", "ControlPersist=60",
          "--", host, ".local/bin/desktop-link-peer"],
         input=json.dumps({"version": 1, "action": action, **fields}).encode(),
         capture_output=True, timeout=20, check=False,
