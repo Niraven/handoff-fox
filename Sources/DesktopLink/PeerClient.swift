@@ -9,6 +9,14 @@ struct LinuxProject: Codable, Identifiable, Equatable, Sendable {
     var presets: [LinuxJobPreset]? = nil
 }
 
+struct LinuxAgentSession: Decodable, Identifiable, Equatable, Sendable {
+    let agent: String
+    let session: String
+    let pane: String
+
+    var id: String { "\(agent):\(session):\(pane)" }
+}
+
 struct LinuxPeer: Codable, Identifiable, Equatable, Sendable {
     var id: String { address }
     let address: String
@@ -53,6 +61,7 @@ struct PeerReply: Decodable, Sendable {
     let jobs: [LinuxJob]?
     let jobProtocol: Int?
     let transferProtocol: Int?
+    let agents: [LinuxAgentSession]?
 
     var desktopAvailability: DesktopAvailability? { desktopStatus.flatMap(DesktopAvailability.init(rawValue:)) }
 }

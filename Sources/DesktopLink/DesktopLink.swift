@@ -321,6 +321,7 @@ struct LinkPanel: View {
     let workbench: () -> Void
 
     @AppStorage("foxShowsJobs") private var showsJobs = false
+    @AppStorage("foxShowsAgents") private var showsAgents = false
     @State private var targetingFile = false
     @State private var reaction = 0
     @State private var jobsReachable: Bool?
@@ -362,6 +363,7 @@ struct LinkPanel: View {
                                     busy: devices.running != nil)
                 lastProject
                 if showsJobs { jobActivity }
+                if showsAgents, !devices.agentsUnavailable { agentRow }
             }
             if let line = noticeLine {
                 Label(line.text, systemImage: line.symbol)
@@ -400,6 +402,10 @@ struct LinkPanel: View {
         .onChange(of: devices.selected) { _, _ in
             enteringLink = false
             link = ""
+        }
+        .task(id: showsAgents ? devices.selected : nil) {
+            guard showsAgents else { return }
+            await devices.loadAgents()
         }
         .onDisappear {
             targetingFile = false
@@ -452,6 +458,7 @@ struct LinkPanel: View {
                 Button("Choose receive folder…") { devices.chooseReceiveFolder() }
                 Divider()
                 Toggle("Show Linux jobs", isOn: $showsJobs)
+                Toggle("Show Linux agents", isOn: $showsAgents)
                 Button("Check connection") {
                     workbench()
                     Task { await devices.diagnose() }
@@ -640,6 +647,38 @@ struct LinkPanel: View {
             .buttonStyle(.plain)
             .foxCard(radius: 10)
             .disabled(devices.running != nil)
+        }
+    }
+
+    @ViewBuilder private var agentRow: some View {
+        if devices.agents.isEmpty {
+            Label("No agent sessions on Linux", systemImage: "terminal")
+                .font(.system(size: 11))
+                .foregroundStyle(palette.textTertiary)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(devices.agents.prefix(3)) { agent in
+                    HStack(spacing: 6) {
+                        Circle().fill(palette.success).frame(width: 5, height: 5)
+                        Text(agent.agent)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(palette.textPrimary)
+                        Text(agent.session)
+                            .font(.system(size: 10))
+                            .foregroundStyle(palette.textTertiary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                if devices.agents.count > 3 {
+                    Text("+\(devices.agents.count - 3) more")
+                        .font(.system(size: 10))
+                        .foregroundStyle(palette.textTertiary)
+                }
+            }
+            .padding(9)
+            .foxCard(raised: false, radius: 10)
         }
     }
 

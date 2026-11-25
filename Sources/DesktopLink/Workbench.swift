@@ -26,9 +26,12 @@ final class WorkbenchModel: ObservableObject {
     @Published private(set) var supportsJobs = false
     @Published private(set) var reachability: [String: PeerReachability] = [:]
     @Published private(set) var lastSeen: [String: Date] = [:]
+    @Published private(set) var agents: [LinuxAgentSession] = []
+    @Published private(set) var agentsUnavailable = false
     @Published private(set) var preflight: ConnectionCheck?
     @Published private(set) var checkingPreflight = false
     private var lastJobRefresh = Date.distantPast
+    private var lastAgentProbe = Date.distantPast
     private var transferProtocols: [String: Bool]
     private var loadedPeer: String?
     private var checkingJobs = false
@@ -76,6 +79,8 @@ final class WorkbenchModel: ObservableObject {
             error = nil
             clipboardFeedback = nil
             preflight = nil
+            agents = []
+            agentsUnavailable = false
             clearPairingError()
         }
         selected = address
@@ -120,6 +125,7 @@ final class WorkbenchModel: ObservableObject {
         jobs = []
         jobDetail = nil
         supportsJobs = info.jobProtocol == 1
+        agentsUnavailable = false
         rememberTransferProtocol(info, for: address)
         loadedPeer = address
         jobRevision += 1
@@ -168,6 +174,26 @@ final class WorkbenchModel: ObservableObject {
             reachability[address] = .unreachable(String(failing.detail.prefix(52)))
         } else if check.steps.allSatisfy({ $0.state == .ready || $0.state == .unchecked }) {
             noteReachable(address)
+        }
+    }
+
+    /// Read-only: which known coding agents are running on the Linux side.
+    /// A receiver that predates the probe answers "unknown action", and the row
+    /// stays hidden rather than reporting zero.
+    func loadAgents() async {
+        guard let address = selected, !agentsUnavailable else { return }
+        if Date().timeIntervalSince(lastAgentProbe) < 5 { return }
+        lastAgentProbe = Date()
+        do {
+            let reply = try await Task.detached(priority: .utility) {
+                try PeerClient.request(PeerRequest(action: "agents"), on: address)
+            }.value
+            if selected == address { agents = reply.agents ?? [] }
+        } catch let failure as PeerClient.Failure where failure.reason.contains("Unknown Handoff Fox action") {
+            agentsUnavailable = true
+            agents = []
+        } catch {
+            agents = []
         }
     }
 
