@@ -81,6 +81,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
     private let inbox = HandoffInbox()
     private let notifier = FoxNotifier()
     private var announcedJobs = Set<String>()
+    private var activeJobIDs = Set<String>()
     private let desktop = RemoteDesktop()
     private var hotkey: EventHotKeyRef?
     private var hotkeyHandler: EventHandlerRef?
@@ -167,11 +168,15 @@ final class LinkController: NSObject, NSApplicationDelegate {
             self.notifier.post("Received", message)
         }.store(in: &observations)
         workbenchModel.$jobs.sink { [weak self] jobs in
-            guard let self, self.notificationsEnabled else { return }
-            for job in jobs where !job.state.isActive && !self.announcedJobs.contains(job.id) {
-                self.announcedJobs.insert(job.id)
-                self.notifier.post(job.title, job.state == .succeeded ? "Finished" : "Ended: \(job.state.label)")
+            guard let self else { return }
+            if self.notificationsEnabled {
+                for job in jobs where !job.state.isActive && self.activeJobIDs.contains(job.id)
+                    && !self.announcedJobs.contains(job.id) {
+                    self.announcedJobs.insert(job.id)
+                    self.notifier.post(job.title, job.state == .succeeded ? "Finished" : "Ended: \(job.state.label)")
+                }
             }
+            self.activeJobIDs = Set(jobs.filter { $0.state.isActive }.map(\.id))
         }.store(in: &observations)
         registerHotkey()
         let workspaceNotifications = NSWorkspace.shared.notificationCenter
@@ -576,7 +581,7 @@ struct LinkPanel: View {
                 Text("Compare this with the key on Linux before trusting it:")
                     .font(.system(size: 10))
                     .foregroundStyle(palette.textSecondary)
-                ForEach(devices.hostKeys.prefix(2)) { key in
+                ForEach(devices.hostKeys) { key in
                     Text("\(key.type) \(key.fingerprint)")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(palette.textPrimary)

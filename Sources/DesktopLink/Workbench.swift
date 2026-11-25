@@ -133,6 +133,8 @@ final class WorkbenchModel: ObservableObject {
         agentsUnavailable = false
         rememberTransferProtocol(info, for: address)
         loadedPeer = address
+        gliffHint = nil
+        if info.desktopAvailability == .needsGliff { Task { await loadGliffHint(for: address) } }
         jobRevision += 1
         result = nil
         if let data = try? JSONEncoder().encode(peers) {
@@ -744,7 +746,7 @@ struct Workbench: View {
                 } else {
                     Text("Compare with the key on Linux, then trust it:")
                         .font(.caption).foregroundStyle(.secondary)
-                    ForEach(model.hostKeys.prefix(2)) { key in
+                    ForEach(model.hostKeys) { key in
                         Text("\(key.type) \(key.fingerprint)")
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
