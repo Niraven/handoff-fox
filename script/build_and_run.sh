@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+identifier="io.github.niraven.handofffox"
 cd "$root"
 mode="${1:-run}"
 case "$mode" in run|--verify|--install|--package|--debug|--logs|--telemetry) ;; *) exit 2 ;; esac
@@ -49,7 +50,7 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>DesktopLink</string>
-<key>CFBundleIdentifier</key><string>local.desktoplink.control</string>
+<key>CFBundleIdentifier</key><string>${identifier}</string>
 <key>CFBundleName</key><string>Handoff Fox</string>
 <key>CFBundleDisplayName</key><string>Handoff Fox</string>
 <key>CFBundleShortVersionString</key><string>${version}</string>
@@ -82,7 +83,7 @@ fi
 bundle="$published"
 if [[ "$mode" == --install ]]; then
     installed="$HOME/Applications/Desktop Link.app"
-    agent="$HOME/Library/LaunchAgents/local.desktoplink.control.plist"
+    agent="$HOME/Library/LaunchAgents/$identifier.plist"
     domain="gui/$(id -u)"
     mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents"
     install_stage="$(mktemp -d "$HOME/Applications/.handoff-fox-install.XXXXXX")"
@@ -98,16 +99,21 @@ if [[ "$mode" == --install ]]; then
         if [[ -d "$install_stage/previous.app" ]]; then mv "$install_stage/previous.app" "$installed"; fi
         exit 1
     fi
+    legacy="$HOME/Library/LaunchAgents/local.desktoplink.control.plist"
+    if [[ -f "$legacy" ]]; then
+        /bin/launchctl bootout "$domain/local.desktoplink.control" >/dev/null 2>&1 || true
+        rm -f "$legacy"
+    fi
     /usr/bin/plutil -create binary1 "$agent"
-    /usr/bin/plutil -insert Label -string local.desktoplink.control "$agent"
+    /usr/bin/plutil -insert Label -string "$identifier" "$agent"
     /usr/bin/plutil -insert ProgramArguments -array "$agent"
     /usr/bin/plutil -insert ProgramArguments.0 -string /usr/bin/open "$agent"
     /usr/bin/plutil -insert ProgramArguments.1 -string -g "$agent"
     /usr/bin/plutil -insert ProgramArguments.2 -string "$installed" "$agent"
     /usr/bin/plutil -insert RunAtLoad -bool YES "$agent"
     /usr/bin/plutil -lint "$agent"
-    if /bin/launchctl print "$domain/local.desktoplink.control" >/dev/null 2>&1; then
-        /bin/launchctl bootout "$domain/local.desktoplink.control"
+    if /bin/launchctl print "$domain/$identifier" >/dev/null 2>&1; then
+        /bin/launchctl bootout "$domain/$identifier"
     fi
     /bin/launchctl bootstrap "$domain" "$agent"
     exit 0
@@ -117,5 +123,5 @@ case "$mode" in
     --verify) sleep 1; pgrep -x DesktopLink ;;
     --debug) lldb -n DesktopLink ;;
     --logs) /usr/bin/log stream --style compact --info --predicate 'process == "DesktopLink"' ;;
-    --telemetry) /usr/bin/log stream --style compact --info --predicate 'subsystem == "local.desktoplink.control"' ;;
+    --telemetry) /usr/bin/log stream --style compact --info --predicate 'subsystem == "'"$identifier"'"' ;;
 esac

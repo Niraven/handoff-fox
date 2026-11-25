@@ -21,8 +21,8 @@ final class ClipboardSync: ObservableObject {
     private static let preferencesKey = "clipboardSharingByDevice"
     private let board: NSPasteboard
     private let sshConfig: URL?
-    private let writes = DispatchQueue(label: "local.desktoplink.clipboard")
-    private let log = Logger(subsystem: "local.desktoplink.control", category: "Clipboard")
+    private let writes = DispatchQueue(label: "io.github.niraven.handofffox.clipboard")
+    private let log = Logger(subsystem: "io.github.niraven.handofffox", category: "Clipboard")
     private var connected = false
     private var observed = 0
     private var loop: Task<Void, Never>?
