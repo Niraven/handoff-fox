@@ -33,6 +33,9 @@ A cell becomes verified only when a run is recorded and the setup is named. "It 
 | Fetch a public page for research tools | untested | untested | untested | untested |
 | Tray card and quick panel | verified [5][7] | untested | unsupported by design | verified [5] |
 | List running agent sessions | untested | untested | untested | untested |
+| Report how Gliff would install | untested | untested | untested | untested |
+| Add a build preset from the Mac | untested | untested | untested | untested |
+| Trust a new host key in the app | untested | untested | untested | untested |
 
 ### Why the empty rows are empty
 

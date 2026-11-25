@@ -33,6 +33,8 @@ struct PeerRequest: Encodable, Sendable {
     var text: String?
     var job: String?
     var preset: String?
+    var argv: [String]?
+    var artifact: String?
 }
 
 struct PeerReply: Decodable, Sendable {
@@ -62,6 +64,10 @@ struct PeerReply: Decodable, Sendable {
     let jobProtocol: Int?
     let transferProtocol: Int?
     let agents: [LinuxAgentSession]?
+    let packageManager: String?
+    let command: String?
+    let docs: String?
+    let gliffInstalled: Bool?
 
     var desktopAvailability: DesktopAvailability? { desktopStatus.flatMap(DesktopAvailability.init(rawValue:)) }
 }
