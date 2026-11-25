@@ -18,7 +18,7 @@ import shutil
 import signal
 import socket
 import ssl
-from stat import S_ISREG
+from stat import S_ISREG, S_IXUSR
 import subprocess
 import sys
 import tempfile
@@ -41,6 +41,9 @@ JOB_TIMEOUT = 900
 QUEUE_TTL = 7 * 24 * 60 * 60
 ORPHAN_TTL = 24 * 60 * 60
 ACTIVE_JOB_STATES = {"queued", "running", "cancelling"}
+MAX_PRESETS = 20
+GLIFF_DOCS = "https://github.com/omacom/gliff"
+OS_RELEASE = Path("/etc/os-release")
 
 
 class RequestError(Exception):
@@ -94,9 +97,89 @@ def save_project(name, path):
             raise RequestError("This receiver can hold up to 50 projects.")
         entry = {"id": uuid.uuid4().hex, "name": name.strip(), "path": str(directory)}
         entries.append(entry)
-        with tempfile.NamedTemporaryFile(mode="w", dir=CONFIG.parent, delete=False) as temp:
+        write_projects(entries)
+    return {"projects": [display(item) for item in entries]}
+
+
+def write_projects(entries):
+    with tempfile.NamedTemporaryFile(mode="w", dir=CONFIG.parent, delete=False) as temp:
+        try:
             json.dump({"projects": entries}, temp)
-        os.replace(temp.name, CONFIG)
+            temp.flush()
+            os.fsync(temp.fileno())
+            os.replace(temp.name, CONFIG)
+        finally:
+            Path(temp.name).unlink(missing_ok=True)
+
+
+def preset_identifier(name):
+    identifier = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40].strip("-")
+    if not identifier:
+        raise RequestError("Give the preset a name with at least one letter or digit.")
+    return identifier
+
+
+def preset_argv(directory, argv):
+    if (not isinstance(argv, list) or not 1 <= len(argv) <= 8
+            or not all(isinstance(argument, str) and len(argument) <= 200 for argument in argv)):
+        raise RequestError("Give a preset 1 to 8 arguments of up to 200 characters each.")
+    if any("\x00" in argument for argument in argv):
+        raise RequestError("A preset argument cannot contain a NUL byte.")
+    command = Path(argv[0])
+    if not argv[0] or command.is_absolute() or ".." in command.parts:
+        raise RequestError("Start the preset with a relative command path inside the project.")
+    resolved = (directory / command).resolve()
+    if directory not in resolved.parents:
+        raise RequestError("The preset command must be an executable file inside the project.")
+    try:
+        status = resolved.stat()
+    except OSError as error:
+        raise RequestError("The preset command must be an executable file inside the project.") from error
+    if not S_ISREG(status.st_mode) or not status.st_mode & S_IXUSR:
+        raise RequestError("The preset command must be an executable file inside the project.")
+    return argv
+
+
+def preset_artifact(artifact):
+    if artifact is None or artifact == "":
+        return None
+    path = Path(artifact) if isinstance(artifact, str) else None
+    if path is None or "\x00" in artifact or path.is_absolute() or ".." in path.parts:
+        raise RequestError("Make the preset artifact a relative path inside the project.")
+    return artifact
+
+
+def save_preset(payload):
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 64:
+        raise RequestError("Enter a preset name of up to 64 characters.")
+    name = name.strip()
+    identifier = preset_identifier(name)
+    artifact = preset_artifact(payload.get("artifact"))
+    CONFIG.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with CONFIG.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        entries = projects()
+        project = next((entry for entry in entries if entry["id"] == payload.get("project")), None)
+        if project is None:
+            raise RequestError("This project is no longer saved on Linux.")
+        try:
+            directory = Path(project["path"]).expanduser().resolve(strict=True)
+        except OSError as error:
+            raise RequestError("The project folder is unavailable.") from error
+        argv = preset_argv(directory, payload.get("argv"))
+        configured = project.get("presets")
+        configured = configured if isinstance(configured, list) else []
+        for existing in job_presets(project):
+            if existing["id"] == identifier or existing["name"] == name:
+                raise RequestError(f"This project already has a preset named {existing['name']}.")
+        if len(configured) >= MAX_PRESETS:
+            raise RequestError(f"A project can hold up to {MAX_PRESETS} presets.")
+        preset = {"id": identifier, "name": name, "argv": argv}
+        if artifact is not None:
+            preset["artifact"] = artifact
+        project["presets"] = [*configured, preset]
+        write_projects(entries)
     return {"projects": [display(item) for item in entries]}
 
 
@@ -1176,6 +1259,36 @@ def scrape(url):
     raise RequestError("The website redirected too many times.")
 
 
+def os_release_id(path=OS_RELEASE):
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+    values = dict(line.split("=", 1) for line in lines if "=" in line)
+    return values.get("ID", "").strip().strip('"') or None
+
+
+def setup_hint(release=OS_RELEASE):
+    installed = bool(shutil.which("gliff-server"))
+    command = None
+    if shutil.which("omarchy") and os_release_id(release) == "omarchy":
+        package_manager, command = "omarchy", "omarchy pkg add gliff"
+    elif shutil.which("pacman"):
+        package_manager = "pacman"
+        if shutil.which("yay") or shutil.which("paru"):
+            command = "yay -S gliff"
+    elif shutil.which("apt-get"):
+        package_manager = "debian"
+    elif shutil.which("dnf"):
+        package_manager = "fedora"
+    elif shutil.which("zypper"):
+        package_manager = "suse"
+    else:
+        package_manager = "unknown"
+    return {"packageManager": package_manager, "command": command,
+            "docs": GLIFF_DOCS, "gliffInstalled": installed}
+
+
 def desktop_status():
     if not shutil.which("gliff-server"):
         return "needsGliff"
@@ -1283,6 +1396,10 @@ def request(payload):
         return {"transferStatus": mac_file_status(ticket_id(payload.get("project")))}
     if action == "save":
         return save_project(payload.get("name"), payload.get("path"))
+    if action == "save-preset":
+        return save_preset(payload)
+    if action == "setup-hint":
+        return setup_hint()
     if action in {"clipboard-put", "clipboard-get"}:
         return clipboard(action, payload.get("text"))
     if action == "scrape":
