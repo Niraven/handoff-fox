@@ -155,6 +155,14 @@ struct FoxIconButtonStyle: ButtonStyle {
     }
 }
 
+/// One motion vocabulary for the whole app: small amplitudes, springs that settle
+/// fast, and no animation on anything pressed dozens of times a day.
+enum FoxMotion {
+    static let perk = Animation.spring(response: 0.24, dampingFraction: 0.72)
+    static let celebrate = Animation.spring(response: 0.30, dampingFraction: 0.80)
+    static let fade = Animation.easeOut(duration: 0.16)
+}
+
 enum PeerReachability: Equatable {
     case unknown
     case checking

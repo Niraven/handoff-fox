@@ -29,22 +29,25 @@ struct FoxCompanion: View {
             .rotationEffect(.degrees(!reduceMotion && perked ? -4 : 0))
             .scaleEffect(!reduceMotion && attentive ? 1.05 : 1)
             .offset(y: jumping ? -7 : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: perked)
-            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.78), value: jumping)
+            .animation(reduceMotion ? nil : FoxMotion.perk, value: perked)
+            .animation(reduceMotion ? nil : FoxMotion.celebrate, value: jumping)
 
             if jumping && !reduceMotion {
                 PixelSpark()
                     .fill(palette.warning)
                     .frame(width: 9, height: 9)
-                    .offset(x: 2, y: -3)
-                    .transition(.opacity)
+                    .offset(x: jumping ? 4 : 1, y: jumping ? -7 : -2)
+                    .opacity(jumping ? 1 : 0)
+                    .animation(reduceMotion ? nil : FoxMotion.fade, value: jumping)
             }
             if delivered {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(palette.success)
                     .background(Circle().fill(palette.raisedBottom).padding(-1.5))
+                    .scaleEffect(delivered ? 1 : 0.5)
                     .offset(x: 2, y: -2)
+                    .animation(reduceMotion ? nil : FoxMotion.celebrate, value: delivered)
                     .transition(.opacity)
             }
         }
