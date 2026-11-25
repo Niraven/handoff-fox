@@ -28,6 +28,10 @@ final class WorkbenchModel: ObservableObject {
     @Published private(set) var lastSeen: [String: Date] = [:]
     @Published private(set) var agents: [LinuxAgentSession] = []
     @Published private(set) var agentsUnavailable = false
+    @Published private(set) var hostKeys: [HostTrust.Key] = []
+    @Published private(set) var hostKeyError: String?
+    @Published private(set) var loadingHostKeys = false
+    @Published private(set) var gliffHint: PeerReply?
     @Published private(set) var preflight: ConnectionCheck?
     @Published private(set) var checkingPreflight = false
     private var lastJobRefresh = Date.distantPast
@@ -112,6 +116,7 @@ final class WorkbenchModel: ObservableObject {
         } catch {
             pairingError = error.localizedDescription
             needsHostVerification = (error as? PeerClient.Failure)?.kind == .untrustedHost
+            if needsHostVerification { await loadHostKeys(address) }
             return
         }
         let peer = LinuxPeer(address: address, name: info.name ?? address)
@@ -175,6 +180,56 @@ final class WorkbenchModel: ObservableObject {
         } else if check.steps.allSatisfy({ $0.state == .ready || $0.state == .unchecked }) {
             noteReachable(address)
         }
+    }
+
+    /// Shows the key the machine presents so the person can compare it with the
+    /// Linux side themselves. Nothing is trusted until they say so.
+    func loadHostKeys(_ address: String) async {
+        guard PeerClient.validAddress(address), !loadingHostKeys else { return }
+        loadingHostKeys = true
+        hostKeyError = nil
+        hostKeys = []
+        defer { loadingHostKeys = false }
+        do {
+            hostKeys = try await Task.detached(priority: .userInitiated) {
+                try HostTrust.keys(for: address)
+            }.value
+        } catch {
+            hostKeyError = error.localizedDescription
+        }
+    }
+
+    func trustHost(_ address: String) async -> Bool {
+        let keys = hostKeys
+        do {
+            try await Task.detached(priority: .userInitiated) { try HostTrust.trust(keys) }.value
+            needsHostVerification = false
+            hostKeys = []
+            return true
+        } catch {
+            hostKeyError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// How Gliff would be installed here, if the owner wants it. Reported, never run.
+    func loadGliffHint(for address: String) async {
+        guard gliffHint == nil else { return }
+        gliffHint = try? await Task.detached(priority: .utility) {
+            try PeerClient.request(PeerRequest(action: "setup-hint"), on: address)
+        }.value
+    }
+
+    func savePreset(_ project: LinuxProject, name: String, script: String, arguments: String, artifact: String) async {
+        var argv = [script.trimmingCharacters(in: .whitespacesAndNewlines)]
+        argv += arguments.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        var request = PeerRequest(action: "save-preset", project: project.id, name: name)
+        request.argv = argv
+        let trimmed = artifact.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { request.artifact = trimmed }
+        await send(request, label: "Saving preset")
     }
 
     /// Read-only: which known coding agents are running on the Linux side.
@@ -437,6 +492,8 @@ final class WorkbenchModel: ObservableObject {
                 loadedPeer = target
                 desktopAvailability = reply.desktopAvailability
                 supportsJobs = reply.jobProtocol == 1
+                gliffHint = nil
+                if reply.desktopAvailability == .needsGliff { Task { await loadGliffHint(for: target) } }
                 rememberTransferProtocol(reply, for: target)
             }
             if ["build", "scrape"].contains(request.action), reply.output != nil { result = reply }
@@ -550,6 +607,12 @@ struct Workbench: View {
     @State private var showResearch = false
     @State private var showConnection = false
     @State private var receiveWhenPaired = false
+    @State private var showPreset = false
+    @State private var presetProject = ""
+    @State private var presetName = ""
+    @State private var presetScript = ""
+    @State private var presetArguments = ""
+    @State private var presetArtifact = ""
     @State private var link = ""
     @FocusState private var addressFocused: Bool
     @Environment(\.colorScheme) private var scheme
@@ -674,9 +737,29 @@ struct Workbench: View {
             Toggle("Receive handoffs from this device on this Mac", isOn: $receiveWhenPaired)
                 .font(.callout)
             if model.needsHostVerification, PeerClient.validAddress(target) {
-                Text("Compare the fingerprint SSH shows with the host key on Linux before approving it.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button("Copy verification command") { model.copyHostVerificationCommand(for: target) }
+                if model.hostKeys.isEmpty {
+                    Text("Compare the fingerprint SSH shows with the host key on Linux before approving it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Copy verification command") { model.copyHostVerificationCommand(for: target) }
+                } else {
+                    Text("Compare with the key on Linux, then trust it:")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.hostKeys.prefix(2)) { key in
+                        Text("\(key.type) \(key.fingerprint)")
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                    }
+                    HStack {
+                        Button("Trust and pair") {
+                            Task {
+                                if await model.trustHost(target) { pair(target) }
+                            }
+                        }
+                        Button("Copy verification command") { model.copyHostVerificationCommand(for: target) }
+                    }
+                    .controlSize(.small)
+                }
             }
         }
         .disabled(model.running != nil)
@@ -830,9 +913,28 @@ struct Workbench: View {
         case .ready:
             Label("Desktop ready", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
         case .needsGliff:
-            HStack {
-                Label("Desktop sharing needs Gliff on Linux.", systemImage: "display")
-                Link("Gliff setup", destination: URL(string: "https://github.com/omacom/gliff")!)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Label("Desktop sharing needs Gliff on Linux.", systemImage: "display")
+                    Link("Gliff setup", destination: URL(string: "https://github.com/omacom/gliff")!)
+                }
+                if let hint = model.gliffHint {
+                    if let command = hint.command {
+                        HStack(spacing: 6) {
+                            Text(command)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(command, forType: .string)
+                            }
+                            .controlSize(.small)
+                        }
+                    } else if hint.packageManager != nil {
+                        Text("No package for this distribution. Build it from the Gliff source.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .font(.caption).foregroundStyle(.secondary)
         case .needsHyprland:
@@ -849,6 +951,9 @@ struct Workbench: View {
             HStack {
                 Text("Saved projects").font(.subheadline.weight(.semibold))
                 Spacer()
+                if !model.projects.isEmpty {
+                    Button(showPreset ? "Cancel preset" : "New preset…") { showPreset.toggle() }
+                }
                 Button(showSave ? "Cancel" : "Save folder…") { showSave.toggle() }
             }
             if showSave {
@@ -863,6 +968,47 @@ struct Workbench: View {
                     }
                     .disabled(projectName.isEmpty || projectPath.isEmpty)
                 }
+            }
+            if showPreset {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Picker("Project", selection: $presetProject) {
+                            ForEach(model.projects) { Text($0.name).tag($0.id) }
+                        }
+                        .labelsHidden()
+                        TextField("Preset name", text: $presetName)
+                    }
+                    HStack {
+                        TextField("./ci/test.sh", text: $presetScript)
+                            .accessibilityLabel("Script inside the project")
+                        TextField("Arguments", text: $presetArguments)
+                            .accessibilityLabel("Script arguments")
+                    }
+                    HStack {
+                        TextField("Artifact, optional", text: $presetArtifact)
+                            .accessibilityLabel("Artifact path inside the project")
+                        Button("Save preset") {
+                            guard let project = model.projects.first(where: { $0.id == presetProject }) else { return }
+                            Task {
+                                await model.savePreset(project, name: presetName, script: presetScript,
+                                                       arguments: presetArguments, artifact: presetArtifact)
+                                if model.error == nil {
+                                    showPreset = false
+                                    presetName = ""
+                                    presetScript = ""
+                                    presetArguments = ""
+                                    presetArtifact = ""
+                                }
+                            }
+                        }
+                        .disabled(presetName.isEmpty || presetScript.isEmpty || presetProject.isEmpty)
+                    }
+                    Text("The script must already exist inside the project and be executable. Handoff Fox cannot add one the Linux owner didn't put there.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .padding(8)
+                .foxCard(raised: false, radius: 8)
+                .onAppear { if presetProject.isEmpty { presetProject = model.projects.first?.id ?? "" } }
             }
             if model.projects.isEmpty {
                 Text("Save a folder to open it on this Linux desktop.")

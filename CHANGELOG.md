@@ -18,6 +18,10 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 - **Project documents**: [security policy](SECURITY.md), [receiver protocol](docs/PROTOCOL.md), [support matrix](docs/SUPPORT.md), [architecture](docs/ARCHITECTURE.md), [contributing guide](CONTRIBUTING.md), issue and pull request templates, and this changelog.
 - **Remote agent sessions**, opt-in and read-only: a receiver action lists tmux panes running a known coding agent, by agent, session and pane name only, never a command line or a path. It reports what is running rather than guessing which session wants attention.
 - **A check before pairing**: the first run asks whether the address is reachable, the host key verified, the key accepted and the receiver present, and renders each stage, so an unready machine is a checklist instead of a failed Pair.
+- **Trusting a host key without Terminal**: when the key is unknown, pairing shows the key type and its SHA-256 fingerprint so it can be compared with `ssh-keygen -lf` on Linux, and writes `known_hosts` only after the person confirms.
+- **Gliff setup guidance**: the desktop card names the exact install command for this distribution, or links the upstream source build when no package is certain to exist. Nothing is installed on the Linux side without the owner.
+- **Presets from the Mac**: a saved project can gain a preset whose command must already be an executable inside that project, so the Mac can name work the Linux owner put there but cannot introduce new commands.
+- **macOS notifications** for a delivered handoff, a received file, and a job that finishes after the panel closes.
 
 ### Changed
 

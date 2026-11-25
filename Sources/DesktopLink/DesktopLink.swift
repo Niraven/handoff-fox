@@ -79,6 +79,8 @@ final class LinkController: NSObject, NSApplicationDelegate {
     private var workbenchWindow: NSWindow?
     private var quickWindow: NSPanel?
     private let inbox = HandoffInbox()
+    private let notifier = FoxNotifier()
+    private var announcedJobs = Set<String>()
     private let desktop = RemoteDesktop()
     private var hotkey: EventHotKeyRef?
     private var hotkeyHandler: EventHandlerRef?
@@ -155,6 +157,22 @@ final class LinkController: NSObject, NSApplicationDelegate {
                 try? await Task.sleep(for: .seconds(4))
             }
         }
+        notifier.prepare()
+        inbox.fileDeliveries.sink { [weak self] transfer in
+            guard let self, self.notificationsEnabled else { return }
+            self.notifier.post("Delivered", "\(transfer.title) landed on \(self.workbenchModel.selectedName).")
+        }.store(in: &observations)
+        inbox.$lastReceived.compactMap { $0 }.sink { [weak self] message in
+            guard let self, self.notificationsEnabled else { return }
+            self.notifier.post("Received", message)
+        }.store(in: &observations)
+        workbenchModel.$jobs.sink { [weak self] jobs in
+            guard let self, self.notificationsEnabled else { return }
+            for job in jobs where !job.state.isActive && !self.announcedJobs.contains(job.id) {
+                self.announcedJobs.insert(job.id)
+                self.notifier.post(job.title, job.state == .succeeded ? "Finished" : "Ended: \(job.state.label)")
+            }
+        }.store(in: &observations)
         registerHotkey()
         let workspaceNotifications = NSWorkspace.shared.notificationCenter
         sleepObserver = workspaceNotifications.addObserver(
@@ -210,6 +228,10 @@ final class LinkController: NSObject, NSApplicationDelegate {
                 await self.desktop.showOrOpen(host: host)
             }
         })
+    }
+
+    private var notificationsEnabled: Bool {
+        UserDefaults.standard.object(forKey: "foxNotifications") as? Bool ?? true
     }
 
     private func registerHotkey() {
@@ -525,17 +547,57 @@ struct LinkPanel: View {
                     .font(.system(size: 11))
                     .foregroundStyle(palette.danger)
                     .fixedSize(horizontal: false, vertical: true)
-                if devices.needsHostVerification {
-                    Button("Copy the fingerprint command") {
+                if devices.needsHostVerification { hostKeyPrompt }
+            }
+        }
+        .padding(11)
+        .foxCard()
+        .onAppear { pairFocused = true }
+    }
+
+    @ViewBuilder private var hostKeyPrompt: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if devices.loadingHostKeys {
+                Text("Reading the host key…")
+                    .font(.system(size: 10))
+                    .foregroundStyle(palette.textTertiary)
+            } else if devices.hostKeys.isEmpty {
+                if let error = devices.hostKeyError {
+                    Text(error)
+                        .font(.system(size: 10))
+                        .foregroundStyle(palette.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button("Copy the fingerprint command") {
+                    devices.copyHostVerificationCommand(for: trimmedPair)
+                }
+                .buttonStyle(FoxSecondaryButtonStyle(compact: true))
+            } else {
+                Text("Compare this with the key on Linux before trusting it:")
+                    .font(.system(size: 10))
+                    .foregroundStyle(palette.textSecondary)
+                ForEach(devices.hostKeys.prefix(2)) { key in
+                    Text("\(key.type) \(key.fingerprint)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(palette.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                HStack(spacing: 6) {
+                    Button("Trust and pair") {
+                        Task {
+                            if await devices.trustHost(trimmedPair) { pair() }
+                        }
+                    }
+                    .buttonStyle(FoxSecondaryButtonStyle(compact: true))
+                    Button("Copy command") {
                         devices.copyHostVerificationCommand(for: trimmedPair)
                     }
                     .buttonStyle(FoxSecondaryButtonStyle(compact: true))
                 }
             }
         }
-        .padding(11)
-        .foxCard()
-        .onAppear { pairFocused = true }
     }
 
     private var recovery: some View {

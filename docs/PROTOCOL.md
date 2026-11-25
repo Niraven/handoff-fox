@@ -113,6 +113,14 @@ Field: `project` (a ticket). Returns `transferStatus` as `queued`, `delivered`, 
 
 Takes no fields. Returns `agents`, the tmux panes running a recognised coding agent: `{"agent", "session", "pane"}`, at most 20 entries. `agent` is one of Claude, Codex, Cursor, Aider, Goose, OpenCode, or Copilot, matched against the pane's current command and title. Nothing else travels: no command line, no working directory, no file path. A machine without `tmux`, or a `tmux` listing that fails, answers with an empty list rather than an error. The action is read-only and reports what is running; it does not claim to know which session wants attention.
 
+### `setup-hint`
+
+Takes no fields and never fails. Returns `packageManager`, `command`, `docs`, and `gliffInstalled`. `command` is a string only when a package is certain to exist for this system, otherwise null and `docs` (`https://github.com/omacom/gliff`) is the answer. Nothing is executed.
+
+### `save-preset`
+
+Fields: `project` (id), `name` (≤ 64 characters), `argv` (1–8 strings of ≤ 200 characters), and an optional `artifact`. Adds a preset to a saved project and returns the whole `projects` list in the `pair` shape. `argv[0]` must be a relative path that resolves to an executable regular file inside the project; symlinks are resolved before the check, so a link out of the project is refused the same way. Arguments are literal and may not contain NUL. The id is the name lowercased with non-alphanumerics replaced by hyphens, cut to 40 characters. Duplicate ids and names are refused by name, and a project holds at most 20 presets.
+
 ### `save`
 
 Fields: `name` and `path`. Adds a project to `projects.json` and returns the whole `projects` list in the `pair` shape. The name is at most 64 characters, the path must be an existing absolute directory, duplicates are refused, and the file holds at most 50 projects. The write is serialized with `flock` and published with `os.replace`, so a reader never sees a partial file.
