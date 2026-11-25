@@ -93,6 +93,7 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" \
               release/Handoff-Fox.zip release/handoff-fox-linux-scripts.tar.gz release/SHA256SUMS --clobber
+            gh release edit "$RELEASE_TAG" --notes-file release/notes.md
           else
             gh release create "$RELEASE_TAG" \
               release/Handoff-Fox.zip release/handoff-fox-linux-scripts.tar.gz release/SHA256SUMS \
