@@ -263,6 +263,35 @@ class DurableJobTests(unittest.TestCase):
             {"id": "build", "name": "Build"}, {"id": "test", "name": "Test"}
         ])
 
+    def test_project_config_errors_name_the_path(self):
+        for content in ('{"projects": [', '{"saved": []}'):
+            with self.subTest(config=content):
+                self.config.write_text(content)
+                reply = self.invoke("pair")
+                self.assertFalse(reply["ok"], reply)
+                self.assertIn(str(self.config), reply["error"])
+
+    def test_valid_project_config_skips_malformed_entries(self):
+        self.config.write_text(json.dumps({"projects": [
+            "not a project",
+            {"name": "No identifier", "path": str(self.project)},
+            {"id": "kept", "name": "Kept", "path": str(self.project),
+             "presets": [{"id": "test", "name": "Test", "argv": [sys.executable, "-c", "pass"]}]},
+        ]}))
+        reply = self.request("pair")
+        self.assertEqual([item["id"] for item in reply["projects"]], ["kept"])
+        self.assertEqual(reply["projects"][0]["presets"], [{"id": "test", "name": "Test"}])
+
+    def test_preset_without_an_id_or_argv_is_reported(self):
+        self.configure("pass")
+        document = json.loads(self.config.read_text())
+        document["projects"][0]["presets"] = [{"name": "Missing argv"}]
+        self.config.write_text(json.dumps(document))
+        reply = self.invoke("pair")
+        self.assertFalse(reply["ok"], reply)
+        self.assertIn(str(self.config), reply["error"])
+        self.assertIn("preset 1", reply["error"])
+
     def test_open_terminal_runs_only_the_platform_command_at_the_saved_path(self):
         self.project = self.root / "source project $literal"
         self.project.mkdir()
