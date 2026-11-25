@@ -120,6 +120,10 @@ class SiteBuildTests(unittest.TestCase):
         self.assertEqual(len(matrices), 1, "the landing page needs exactly one generated matrix")
         self.assertEqual(matrices[0]["rows"], [header] + rows)
 
+        support_matrices = [table for table in self.pages["support.html"].tables if table["class"] == "matrix"]
+        self.assertEqual(len(support_matrices), 1, "the support page needs the same matrix class as the landing page")
+        self.assertEqual(support_matrices[0]["rows"], [header] + rows)
+
     def test_no_raw_markdown_survives(self):
         for name, page in self.pages.items():
             for line in "".join(page.text).splitlines():

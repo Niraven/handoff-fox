@@ -347,7 +347,8 @@ class Markdown:
             elif kind == "list":
                 rendered.append(self.list_block(block[2], block[1]))
             elif kind == "table":
-                rendered.append(self.table(block[1], block[2]))
+                css_class = "matrix" if self.source == "docs/SUPPORT.md" else ""
+                rendered.append(self.table(block[1], block[2], css_class=css_class))
             elif kind == "quote":
                 rendered.append("<blockquote>\n" + self.render(block[1]) + "\n</blockquote>")
             elif kind == "hr":
