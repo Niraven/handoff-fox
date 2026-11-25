@@ -43,7 +43,7 @@ jobs:
 
       - name: Build the app package
         env:
-          HANDOFF_FOX_VERSION: ${{ github.ref_name }}
+          HANDOFF_FOX_VERSION: ${{ inputs.tag || github.ref_name }}
         run: ./script/build_and_run.sh --package
 
       - name: Collect the release assets
