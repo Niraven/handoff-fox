@@ -51,10 +51,12 @@ enum HostTrust {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             if FileManager.default.fileExists(atPath: file.path) {
+                let existing = (try? Data(contentsOf: file)) ?? Data()
+                let separator = existing.isEmpty || existing.last == UInt8(ascii: "\n") ? "" : "\n"
                 let handle = try FileHandle(forWritingTo: file)
                 defer { try? handle.close() }
                 try handle.seekToEnd()
-                try handle.write(contentsOf: Data(text.utf8))
+                try handle.write(contentsOf: Data(separator.utf8) + Data(text.utf8))
             } else {
                 try text.write(to: file, atomically: true, encoding: .utf8)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600],

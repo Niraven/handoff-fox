@@ -151,3 +151,35 @@ class SiteBuildTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InlineRenderingTests(unittest.TestCase):
+    """The renderer is hand-written, so the forms it claims to support are pinned here."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.builder = load_builder()
+        cls.site = cls.builder.Site(REPO)
+
+    def render(self, markdown):
+        page = self.builder.Markdown(self.site, SUPPORT)
+        return page.render(markdown.splitlines())
+
+    def test_link_and_image_titles_survive_escaping(self):
+        page = self.render('[x](SETUP.md "the title")')
+        self.assertIn('title="the title"', page)
+        self.assertIn('href="setup.html"', page)
+        self.assertNotIn("[x](", page)
+        image = self.render('![fox](assets/TrayFox.png "a fox")')
+        self.assertIn('title="a fox"', image)
+        self.assertIn('alt="fox"', image)
+
+    def test_quotes_in_prose_stay_readable(self):
+        page = self.render('He pressed "Pair" and it worked.')
+        self.assertIn('"Pair"', page)
+        self.assertNotIn("&quot;", page)
+
+    def test_unknown_citation_stays_text(self):
+        page = self.render("Verified [3][7] on Omarchy.")
+        self.assertIn("[3][7]", page)
+        self.assertNotIn("<a href", page)

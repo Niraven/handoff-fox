@@ -56,10 +56,10 @@ elif [ -n "${DISPLAY:-}" ]; then
     session="X11 (${DISPLAY})"
 fi
 
-protocol="$(sed -n 's/^VERSION = \(.*\)$/\1/p' "$peer" 2>/dev/null | head -1)"
+protocol="$(sed -n 's/^VERSION = \(.*\)$/\1/p' "$peer" 2>/dev/null | head -1 || true)"
 request() {
     printf '{"version": %s, "action": "%s"}\n' "${protocol:-1}" "$1" \
-        | python3 -B "$peer" 2>/dev/null | tail -1
+        | python3 -B "$peer" 2>/dev/null | tail -1 || true
 }
 
 started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

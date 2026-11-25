@@ -10,6 +10,10 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 
 ### Fixed
 
+- **A tagless checkout can build again.** `script/build_and_run.sh` treated the failure of `git describe` as fatal under `set -euo pipefail`, so a shallow clone or a checkout with no tags stopped at the version line instead of falling back to `0.1.0`.
+- **A manual release run stamps the tag, not the branch.** Dispatching the release workflow used `github.ref_name`, which is `main` there, so the bundle would have reported `main` as its version.
+- **`known_hosts` keeps one key per line.** Trusting a host appended to the file without checking for a trailing newline, which could weld the new key onto the previous line when a tool wrote the file last.
+- **The site renderer keeps link titles.** `escape_text` ran before the link and image patterns, so a title in `[x](y "t")` turned into visible Markdown, and quotes in ordinary prose were escaped for no reason.
 - **The packaged app reports its release version.** `script/build_and_run.sh` takes `CFBundleShortVersionString` from `HANDOFF_FOX_VERSION` or the nearest tag instead of a hardcoded `0.1.0`, and the release workflow passes the tag through and publishes any tag with a `-` suffix as a GitHub pre-release.
 
 ## [0.1.1-preview.2] - 2026-11-25

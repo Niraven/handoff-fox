@@ -64,7 +64,11 @@ ENTITY_RE = re.compile(r"&(?![a-zA-Z]+;|#\d+;|#x[0-9a-fA-F]+;)")
 
 def escape_text(text):
     text = ENTITY_RE.sub("&amp;", text)
-    return text.replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return text.replace("<", "&lt;").replace(">", "&gt;")
+
+
+def attribute(value):
+    return value.replace('"', "&quot;")
 
 
 def plain(text):
@@ -414,12 +418,12 @@ class Markdown:
 
     def image(self, match):
         alt, target = match.group(1), match.group(2)
-        title = f' title="{match.group(3)}"' if match.group(3) else ""
+        title = f' title="{attribute(match.group(3))}"' if match.group(3) else ""
         return f'<img src="{self.site.href(self.source, target)}" alt="{alt}"{title} loading="lazy">'
 
     def link(self, match):
         label, target = match.group(1), match.group(2)
-        title = f' title="{match.group(3)}"' if match.group(3) else ""
+        title = f' title="{attribute(match.group(3))}"' if match.group(3) else ""
         return f'<a href="{self.site.href(self.source, target)}"{title}>{label}</a>'
 
 

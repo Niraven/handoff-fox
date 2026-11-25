@@ -42,7 +42,7 @@ for size in 16 32 128 256 512; do
         --out "$icons/DesktopLink.iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil --convert icns "$icons/DesktopLink.iconset" --output "$bundle/Contents/Resources/DesktopLink.icns"
-version="${HANDOFF_FOX_VERSION:-$(git -C "$root" describe --tags --abbrev=0 2>/dev/null)}"
+version="${HANDOFF_FOX_VERSION:-$(git -C "$root" describe --tags --abbrev=0 2>/dev/null || true)}"
 version="$(printf '%s' "${version:-0.1.0}" | sed 's/^v//')"
 cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
