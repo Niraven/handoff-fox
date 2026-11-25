@@ -109,6 +109,10 @@ Field: `project` (a ticket). Removes the outbox item and its payload. For a file
 
 Field: `project` (a ticket). Returns `transferStatus` as `queued`, `delivered`, or `unknown`, so the Linux tray can show where its file went.
 
+### `agents`
+
+Takes no fields. Returns `agents`, the tmux panes running a recognised coding agent: `{"agent", "session", "pane"}`, at most 20 entries. `agent` is one of Claude, Codex, Cursor, Aider, Goose, OpenCode, or Copilot, matched against the pane's current command and title. Nothing else travels: no command line, no working directory, no file path. A machine without `tmux`, or a `tmux` listing that fails, answers with an empty list rather than an error. The action is read-only and reports what is running; it does not claim to know which session wants attention.
+
 ### `save`
 
 Fields: `name` and `path`. Adds a project to `projects.json` and returns the whole `projects` list in the `pair` shape. The name is at most 64 characters, the path must be an existing absolute directory, duplicates are refused, and the file holds at most 50 projects. The write is serialized with `flock` and published with `os.replace`, so a reader never sees a partial file.

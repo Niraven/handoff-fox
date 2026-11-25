@@ -15,13 +15,27 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 - **Fox companion** states for reconnect and approved jobs, with the same information shown when Reduce Motion is on.
 - **CI** on both halves: `script/check_mac.sh` on macOS and the receiver regression suite on Ubuntu.
 - **Release workflow** on `v*` tags that runs the Mac checks, packages the app, attaches the archives with their SHA-256 sums, the Linux installers, and build provenance. The packaged app is ad-hoc signed; Developer ID signing and notarization are still pending.
-- **Project documents**: [security policy](SECURITY.md), [receiver protocol](docs/PROTOCOL.md), [support matrix](docs/SUPPORT.md), [contributing guide](CONTRIBUTING.md), issue and pull request templates, and this changelog.
+- **Project documents**: [security policy](SECURITY.md), [receiver protocol](docs/PROTOCOL.md), [support matrix](docs/SUPPORT.md), [architecture](docs/ARCHITECTURE.md), [contributing guide](CONTRIBUTING.md), issue and pull request templates, and this changelog.
+- **Remote agent sessions**, opt-in and read-only: a receiver action lists tmux panes running a known coding agent, by agent, session and pane name only, never a command line or a path. It reports what is running rather than guessing which session wants attention.
+- **A check before pairing**: the first run asks whether the address is reachable, the host key verified, the key accepted and the receiver present, and renders each stage, so an unready machine is a checklist instead of a failed Pair.
 
 ### Changed
 
+- **One design system for every surface.** The palette is sampled from the fox sprites, cards carry a gradient, a lit edge and one shadow, and both appearances work; the forced dark popover is gone. The popover is 264 pt, always states whether the device is reachable, names the send destination on the send row, pairs inline, and pairs nine controls down to four. Motion has one vocabulary, and Reduce Motion keeps the delivery badge.
+- **Reachability is tracked per device** and drives the panel, the menu-bar glyph and the accessibility value; an SSH timeout reports as a timeout instead of blaming the network.
 - README, Setup, and Development describe the Transfer Inbox, Linux jobs, tray receiving, and the jobs CLI.
 - The pinned Gliff viewer patch gained window title and Actual Size options; the upstream release and checksums stay pinned.
 - `v0.1.0-preview.1` remains the only tag. The work above ships from source until the next preview tag.
+
+### Fixed
+
+- One unconsumable Linux-to-Mac handoff could hold the delivery queue forever: the receiver gained `reject`, a seven-day outbox TTL, and an atomic publish so a killed `--queue` leaves nothing behind.
+- A malformed `projects.json` took the receiver down and answered with a message that named nothing. It now names the file and path, and an interrupted upload that finds another file at its destination re-plans instead of reporting a truncated transfer.
+- `job-cancel` was refused while any other action ran; cancel now routes around the busy gate. Job polling is coalesced to one request a second, and the receiver no longer uses `SIGALRM` as a timeout.
+
+### Performance
+
+- One authenticated SSH session per device in both the app and the jobs CLI: a request went from 212 ms to 8 ms against a local sshd, and a tailnet round trip no longer repeats the handshake. Opening the panel prewarms the session.
 
 ## [0.1.0-preview.1] - 2026-11-25
 

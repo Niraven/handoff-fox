@@ -32,6 +32,7 @@ A cell becomes verified only when a run is recorded and the setup is named. "It 
 | Fetch a verified job artifact | verified [6] | untested | untested | verified [6] |
 | Fetch a public page for research tools | untested | untested | untested | untested |
 | Tray card and quick panel | verified [5][7] | untested | unsupported by design | verified [5] |
+| List running agent sessions | untested | untested | untested | untested |
 
 ### Why the empty rows are empty
 
