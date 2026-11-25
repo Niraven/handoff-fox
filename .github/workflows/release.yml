@@ -42,6 +42,8 @@ jobs:
         run: bash script/check_mac.sh
 
       - name: Build the app package
+        env:
+          HANDOFF_FOX_VERSION: ${{ github.ref_name }}
         run: ./script/build_and_run.sh --package
 
       - name: Collect the release assets
@@ -90,11 +92,18 @@ jobs:
           repository.
           NOTES
           } > release/notes.md
+          prerelease_flag=""
+          case "$RELEASE_TAG" in
+            *-*) prerelease_flag="--prerelease" ;;
+          esac
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" \
               release/Handoff-Fox.zip release/handoff-fox-linux-scripts.tar.gz release/SHA256SUMS --clobber
+            if [[ -n "$prerelease_flag" ]]; then
+              gh release edit "$RELEASE_TAG" --prerelease
+            fi
           else
             gh release create "$RELEASE_TAG" \
               release/Handoff-Fox.zip release/handoff-fox-linux-scripts.tar.gz release/SHA256SUMS \
-              --title "Handoff Fox $RELEASE_TAG" --notes-file release/notes.md
+              --title "Handoff Fox $RELEASE_TAG" --notes-file release/notes.md $prerelease_flag
           fi
