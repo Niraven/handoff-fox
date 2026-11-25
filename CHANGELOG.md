@@ -4,6 +4,10 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **The packaged app reports its release version.** `script/build_and_run.sh` takes `CFBundleShortVersionString` from `HANDOFF_FOX_VERSION` or the nearest tag instead of a hardcoded `0.1.0`, and the release workflow passes the tag through and publishes any tag with a `-` suffix as a GitHub pre-release.
+
 ## [0.1.1-preview.2] - 2026-11-25
 
 ### Added

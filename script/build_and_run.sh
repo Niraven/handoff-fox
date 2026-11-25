@@ -42,7 +42,9 @@ for size in 16 32 128 256 512; do
         --out "$icons/DesktopLink.iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil --convert icns "$icons/DesktopLink.iconset" --output "$bundle/Contents/Resources/DesktopLink.icns"
-cat > "$bundle/Contents/Info.plist" <<'PLIST'
+version="${HANDOFF_FOX_VERSION:-$(git -C "$root" describe --tags --abbrev=0 2>/dev/null)}"
+version="$(printf '%s' "${version:-0.1.0}" | sed 's/^v//')"
+cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -50,7 +52,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>local.desktoplink.control</string>
 <key>CFBundleName</key><string>Handoff Fox</string>
 <key>CFBundleDisplayName</key><string>Handoff Fox</string>
-<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleShortVersionString</key><string>${version}</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleIconFile</key><string>DesktopLink.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
