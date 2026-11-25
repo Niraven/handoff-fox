@@ -199,12 +199,17 @@ def open_panel(start_hidden, show_handoff=False):
             window.desktop-link .fox-status { font-size: 11px; color: #d5c6e8; }
             window.desktop-link .fox-status.connected { color: #b7ebd3; }
             window.desktop-link .fox-emblem {
-                min-width: 42px; min-height: 42px; background-color: rgba(250,164,102,.14);
+                min-width: 44px; min-height: 44px; background-color: #2e1f3b;
                 border: 1px solid rgba(250,164,102,.24); border-radius: 12px;
             }
             window.desktop-link .fox-emblem:drop(active) {
                 border-color: #ffc29b; background-color: rgba(250,164,102,.29);
             }
+            window.desktop-link .fox-face { transition: transform 135ms ease-out; }
+            window.desktop-link .fox-face.perked { transform: rotate(-5deg); }
+            window.desktop-link .fox-face.hop { transform: translateY(-4px); }
+            window.desktop-link .fox-spark { background-color: #ffe8ad; }
+            window.desktop-link .fox-transfer-error { color: #ffc29b; }
             window.desktop-link .fox-primary {
                 min-height: 35px; padding: 4px 12px; font-weight: 700;
                 background-image: linear-gradient(125deg, #dbc0ff, #c6a6f7);
@@ -225,10 +230,68 @@ def open_panel(start_hidden, show_handoff=False):
         )
         header = Gtk.HeaderBar()
         header.set_decoration_layout(":close")
-        emblem = Gtk.Image.new_from_icon_name("local.desktoplink.control")
-        emblem.set_pixel_size(27)
+        data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+        sprites = {}
+        for active, name in ((False, "FoxRest.png"), (True, "FoxAlert.png")):
+            try:
+                sprites[active] = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                    str(data_home / "desktop-link" / name), 44, 44, True
+                )
+            except GLib.Error:
+                pass
+        face = Gtk.Image.new_from_icon_name("local.desktoplink.control")
+        face.set_pixel_size(27)
+        face.add_css_class("fox-face")
+        emblem = Gtk.Overlay()
+        emblem.set_child(face)
         emblem.add_css_class("fox-emblem")
         emblem.set_tooltip_text("Drop one local file to send to your Mac")
+        spark = Gtk.Overlay(halign=Gtk.Align.END, valign=Gtk.Align.START,
+                            width_request=10, height_request=10, can_target=False, visible=False)
+        spark.set_child(Gtk.Box(width_request=2, height_request=10, halign=Gtk.Align.CENTER))
+        crossbar = Gtk.Box(width_request=10, height_request=2, valign=Gtk.Align.CENTER)
+        spark.get_child().add_css_class("fox-spark")
+        crossbar.add_css_class("fox-spark")
+        spark.add_overlay(crossbar)
+        emblem.add_overlay(spark)
+        fox = {"hover": False, "drag": False, "landing": 0}
+
+        def animations_enabled():
+            return Gtk.Settings.get_default().get_property("gtk-enable-animations")
+
+        def update_fox():
+            active = fox["hover"] or fox["drag"]
+            if sprite := sprites.get(active, sprites.get(False)):
+                face.set_from_pixbuf(sprite)
+            if active and animations_enabled():
+                face.add_css_class("perked")
+            else:
+                face.remove_css_class("perked")
+
+        def hover(active):
+            fox["hover"] = active
+            update_fox()
+
+        def land():
+            fox["landing"] = 0
+            face.remove_css_class("hop")
+            spark.set_visible(False)
+            return False
+
+        def celebrate():
+            if not animations_enabled() or not window.get_mapped():
+                return
+            if fox["landing"]:
+                GLib.source_remove(fox["landing"])
+            face.add_css_class("hop")
+            spark.set_visible(True)
+            fox["landing"] = GLib.timeout_add(135, land)
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", lambda *_: hover(True))
+        motion.connect("leave", lambda *_: hover(False))
+        emblem.add_controller(motion)
+        update_fox()
         header.pack_start(emblem)
         title = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         destination = Gtk.Label(label="Mac")
@@ -237,6 +300,9 @@ def open_panel(start_hidden, show_handoff=False):
         status = Gtk.Label(label="Checking link")
         status.add_css_class("fox-status")
         title.append(status)
+        drop_hint = Gtk.Label(label="Drop to send to Mac", visible=False)
+        drop_hint.add_css_class("fox-status")
+        title.append(drop_hint)
         header.set_title_widget(title)
         action = Gtk.Button(icon_name="media-playback-pause-symbolic", tooltip_text="Pause input", sensitive=False)
         header.pack_end(action)
@@ -250,34 +316,111 @@ def open_panel(start_hidden, show_handoff=False):
         handoff_button.set_tooltip_text("Handoff · Ctrl + Alt + J")
         handoff_button.connect("clicked", lambda _: present_handoff())
         card.append(handoff_button)
-        drop_feedback = Gtk.Label(xalign=0, visible=False, wrap=True, max_width_chars=29)
-        card.append(drop_feedback)
+        transfer_row = Gtk.Box(spacing=6, visible=False)
+        drop_feedback = Gtk.Label(xalign=0, wrap=True, max_width_chars=27, hexpand=True)
+        retry_file = Gtk.Button(label="Retry", visible=False, valign=Gtk.Align.CENTER)
+        transfer_row.append(drop_feedback)
+        transfer_row.append(retry_file)
+        card.append(transfer_row)
+        transfer = {"ticket": None, "queueing": False, "checking": False, "retry": None}
 
-        def show_drop_feedback(message):
+        def show_drop_feedback(message, retry_path=None):
+            transfer["retry"] = retry_path
             drop_feedback.set_label(message)
-            drop_feedback.set_visible(True)
+            retry_file.set_visible(retry_path is not None)
+            if retry_path is not None:
+                drop_feedback.add_css_class("fox-transfer-error")
+            else:
+                drop_feedback.remove_css_class("fox-transfer-error")
+            transfer_row.set_visible(True)
             return False
 
-        def drop_file(_target, files, _x, _y):
-            selected = files.get_files()
-            if len(selected) != 1 or not (path := selected[0].get_path()):
+        def queued(ticket, error, retry_path):
+            transfer.update(ticket=ticket, queueing=False)
+            return show_drop_feedback(error if ticket is None else "Queued for Mac", retry_path)
+
+        def queue_file(path):
+            if transfer["queueing"]:
                 return False
+            transfer.update(ticket=None, queueing=True)
             show_drop_feedback("Queueing file…")
 
             def send():
                 try:
-                    peer_call("--queue", "file", path)
-                    message = "File queued for your Mac."
+                    ticket = peer_call("--queue", "file", path)["handoffs"][0]["id"]
+                    GLib.idle_add(queued, ticket, None, None)
+                except (json.JSONDecodeError, KeyError, IndexError, subprocess.TimeoutExpired):
+                    GLib.idle_add(queued, None, "Could not confirm that the file was queued.", None)
                 except (ValueError, OSError, subprocess.SubprocessError) as error:
-                    message = str(error)
-                GLib.idle_add(show_drop_feedback, message)
+                    GLib.idle_add(queued, None, str(error), path)
 
             executor.submit(send)
             return True
 
+        def drop_ended():
+            fox["drag"] = False
+            drop_hint.set_visible(False)
+            update_fox()
+
+        def drop_entered(*_):
+            if transfer["queueing"]:
+                return Gdk.DragAction(0)
+            fox["drag"] = True
+            drop_hint.set_visible(True)
+            update_fox()
+            return Gdk.DragAction.COPY
+
+        def drop_file(_target, files, _x, _y):
+            drop_ended()
+            selected = files.get_files()
+            if len(selected) != 1 or not (path := selected[0].get_path()):
+                return False
+            return queue_file(path)
+
+        def apply_confirmation(ticket, result):
+            transfer["checking"] = False
+            if ticket != transfer["ticket"]:
+                return False
+            if result == "delivered":
+                transfer["ticket"] = None
+                show_drop_feedback("Delivered to Mac")
+                celebrate()
+            elif result == "unknown":
+                transfer["ticket"] = None
+                show_drop_feedback("Delivery to Mac is unconfirmed.")
+            return False
+
+        def check_delivery(*_):
+            ticket = transfer["ticket"]
+            if not ticket or transfer["checking"] or not window.get_mapped():
+                return
+            transfer["checking"] = True
+
+            def check():
+                try:
+                    result = peer_call(payload={"version": 1, "action": "mac-file-status", "project": ticket})
+                except (ValueError, OSError, subprocess.SubprocessError):
+                    result = {}
+                GLib.idle_add(apply_confirmation, ticket, result.get("transferStatus"))
+
+            executor.submit(check)
+
+        retry_file.connect("clicked", lambda _: transfer["retry"] and queue_file(transfer["retry"]))
         drop_target = Gtk.DropTarget.new(Gdk.FileList.__gtype__, Gdk.DragAction.COPY)
+        drop_target.connect("enter", drop_entered)
+        drop_target.connect("leave", lambda *_: drop_ended())
         drop_target.connect("drop", drop_file)
         emblem.add_controller(drop_target)
+
+        def settle_fox(*_):
+            fox["hover"] = False
+            drop_ended()
+            if fox["landing"]:
+                GLib.source_remove(fox["landing"])
+            land()
+
+        window.connect("unmap", settle_fox)
+        Gtk.Settings.get_default().connect("notify::gtk-enable-animations", settle_fox)
         details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         details.add_css_class("fox-details")
         card.append(details)
@@ -464,7 +607,6 @@ def open_panel(start_hidden, show_handoff=False):
         keys.connect("key-pressed", key_pressed)
         window.add_controller(keys)
 
-        data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
         art = GdkPixbuf.Pixbuf.new_from_file(str(data_home / "desktop-link/TrayFox.png"))
         source = art.get_pixels()
         size = art.get_width()
@@ -541,6 +683,7 @@ def open_panel(start_hidden, show_handoff=False):
                 if (just_connected(previous["connected"] if previous else None, connected)
                         and Gtk.Settings.get_default().get_property("gtk-enable-animations")):
                     redraw(2)
+                    celebrate()
                     GLib.timeout_add(170, redraw)
                 action.set_icon_name("media-playback-pause-symbolic" if value["active"] else "media-playback-start-symbolic")
                 action.set_tooltip_text("Pause input" if value["active"] else "Resume input")
@@ -605,10 +748,12 @@ def open_panel(start_hidden, show_handoff=False):
 
         def tick():
             update()
+            check_delivery()
             return True
 
         action.connect("clicked", lambda _: state["status"] and update("stop" if state["status"]["active"] else "start"))
         window.connect("map", load_activity)
+        window.connect("map", check_delivery)
         GLib.timeout_add_seconds(4, tick)
         GLib.timeout_add_seconds(120, load_activity)
         update()

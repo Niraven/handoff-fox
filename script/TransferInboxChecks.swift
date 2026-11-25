@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CryptoKit
 import Foundation
 
@@ -79,6 +80,9 @@ struct TransferInboxChecks {
         }
         try JSONEncoder().encode(queuedRecords).write(to: failedStorage.appendingPathComponent("inbox.json"))
         let offline = HandoffInbox(storage: failedStorage, defaults: defaults, sshConfig: offlineConfig)
+        var offlineSuccesses = 0
+        let offlineObservation = offline.fileDeliveries.sink { _ in offlineSuccesses += 1 }
+        defer { offlineObservation.cancel() }
         do {
             _ = try await offline.sendFile(original, to: alpha, volume: "home")
             preconditionFailure("An unavailable peer accepted the transfer.")
@@ -86,6 +90,8 @@ struct TransferInboxChecks {
             precondition(offline.records.count == 12 && offline.records[0].status == .retry)
         }
         let queued = offline.records[0]
+        precondition(offlineSuccesses == 0 && offline.latestOutgoingFile(to: alpha)?.id == queued.id)
+        precondition(offline.latestOutgoingFile(to: beta) == nil)
         do {
             try await offline.sendLink("https://example.com/", to: alpha)
             preconditionFailure("The outbound queue exceeded 12 pending transfers.")
@@ -165,6 +171,9 @@ struct TransferInboxChecks {
 
         try Data().write(to: fixture.appendingPathComponent("allow-ack"))
         let restarted = HandoffInbox(storage: storage, defaults: defaults, sshConfig: config)
+        var confirmations: [HandoffTransfer] = []
+        let observation = restarted.fileDeliveries.sink { confirmations.append($0) }
+        defer { observation.cancel() }
         restarted.start(address: address, openProjects: {})
         defer { restarted.start(address: nil, openProjects: {}) }
         try await waitFor { restarted.records.contains { $0.direction == .incoming && $0.acknowledged } }
@@ -174,6 +183,9 @@ struct TransferInboxChecks {
         let sent = try await restarted.sendFile(fixtureFile, to: address, volume: "home")
         let returned = try Data(contentsOf: URL(fileURLWithPath: sent))
         precondition(returned == original)
+        precondition(confirmations.count == 1 && confirmations[0].path == sent)
+        await restarted.retry(confirmations[0])
+        precondition(confirmations.count == 1)
         precondition(restarted.records.contains { $0.direction == .outgoing && $0.status == .delivered && $0.path == sent })
         print("Real SSH transfer passed both ways. An interrupted acknowledgement recovered without overwriting or duplicating the received file.")
     }

@@ -1,70 +1,120 @@
+import AppKit
 import SwiftUI
 
 struct FoxCompanion: View {
     let attentive: Bool
-    let celebrating: Bool
+    let reaction: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovering = false
+    @State private var jumping = false
+    @State private var landing: Task<Void, Never>?
 
-    private let fur = Color(red: 0.98, green: 0.63, blue: 0.39)
-    private let cream = Color(red: 1, green: 0.87, blue: 0.73)
-    private let dark = Color(red: 0.23, green: 0.12, blue: 0.20)
+    private static let resting = NSImage(named: "FoxRest")
+    private static let alert = NSImage(named: "FoxAlert")
+    private var perked: Bool { hovering || attentive }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Canvas { context, size in
-                let scale = size.width / 44
-                func shape(_ draw: (inout Path) -> Void, color: Color) {
-                    var path = Path()
-                    draw(&path)
-                    context.fill(path.applying(.init(scaleX: scale, y: scale)), with: .color(color))
+            Group {
+                if let sprite = perked ? Self.alert : Self.resting {
+                    Image(nsImage: sprite).resizable().interpolation(.none)
+                } else {
+                    Image(systemName: "pawprint.fill").foregroundStyle(.orange)
                 }
-                shape({ path in
-                    path.move(to: CGPoint(x: 7, y: 23))
-                    path.addQuadCurve(to: CGPoint(x: 6, y: 8), control: CGPoint(x: 4, y: 16))
-                    path.addQuadCurve(to: CGPoint(x: 18, y: 16), control: CGPoint(x: 12, y: 8))
-                    path.addQuadCurve(to: CGPoint(x: 26, y: 16), control: CGPoint(x: 22, y: 15))
-                    path.addQuadCurve(to: CGPoint(x: 38, y: 8), control: CGPoint(x: 32, y: 8))
-                    path.addQuadCurve(to: CGPoint(x: 37, y: 23), control: CGPoint(x: 40, y: 16))
-                    path.addQuadCurve(to: CGPoint(x: 22, y: 37), control: CGPoint(x: 39, y: 33))
-                    path.addQuadCurve(to: CGPoint(x: 7, y: 23), control: CGPoint(x: 5, y: 33))
-                    path.closeSubpath()
-                }, color: fur)
-                shape({ path in
-                    path.addLines([CGPoint(x: 9, y: 12), CGPoint(x: 15, y: 17), CGPoint(x: 10, y: 20)])
-                    path.closeSubpath()
-                    path.addLines([CGPoint(x: 35, y: 12), CGPoint(x: 34, y: 20), CGPoint(x: 29, y: 17)])
-                    path.closeSubpath()
-                }, color: dark.opacity(0.50))
-                shape({ path in
-                    path.move(to: CGPoint(x: 7, y: 26))
-                    path.addQuadCurve(to: CGPoint(x: 22, y: 30), control: CGPoint(x: 14, y: 23))
-                    path.addQuadCurve(to: CGPoint(x: 37, y: 26), control: CGPoint(x: 30, y: 23))
-                    path.addQuadCurve(to: CGPoint(x: 22, y: 37), control: CGPoint(x: 34, y: 35))
-                    path.addQuadCurve(to: CGPoint(x: 7, y: 26), control: CGPoint(x: 10, y: 35))
-                    path.closeSubpath()
-                }, color: cream)
-                shape({ path in
-                    let height: CGFloat = attentive ? 5 : 3
-                    let eyes: [CGFloat] = [14, 27]
-                    for x in eyes {
-                        path.addEllipse(in: CGRect(x: x, y: 25 - height / 2, width: 3, height: height))
-                    }
-                    path.addRoundedRect(in: CGRect(x: 20, y: 30, width: 4, height: 3),
-                                        cornerSize: CGSize(width: 1.5, height: 1.5))
-                }, color: dark)
             }
-            .offset(y: reduceMotion || !celebrating ? 0 : -3)
-            .animation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.53), value: celebrating)
+            .frame(width: 44, height: 44)
+            .rotationEffect(.degrees(!reduceMotion && perked ? -5 : 0))
+            .offset(y: jumping ? -4 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: perked)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.11), value: jumping)
 
-            if celebrating {
-                Image(systemName: "sparkle")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(cream)
-                    .padding(3)
+            if jumping {
+                PixelSpark()
+                    .fill(Color(red: 1, green: 0.91, blue: 0.68))
+                    .frame(width: 10, height: 10)
+                    .offset(x: 3, y: -2)
             }
         }
         .frame(width: 44, height: 44)
-        .background(fur.opacity(0.13), in: RoundedRectangle(cornerRadius: 13))
+        .background(Color(red: 0.18, green: 0.12, blue: 0.23), in: RoundedRectangle(cornerRadius: 11))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onChange(of: reaction) { _, _ in
+            guard !reduceMotion else { return }
+            landing?.cancel()
+            jumping = true
+            landing = Task {
+                try? await Task.sleep(for: .milliseconds(130))
+                if !Task.isCancelled { jumping = false }
+            }
+        }
+        .onChange(of: reduceMotion) { _, reduced in
+            if reduced { settle() }
+        }
+        .onDisappear {
+            hovering = false
+            settle()
+        }
         .accessibilityHidden(true)
+    }
+
+    private func settle() {
+        landing?.cancel()
+        jumping = false
+    }
+}
+
+private struct PixelSpark: Shape {
+    func path(in rect: CGRect) -> Path {
+        let pixel = rect.width / 5
+        var path = Path()
+        path.addRect(CGRect(x: 2 * pixel, y: 0, width: pixel, height: rect.height))
+        path.addRect(CGRect(x: 0, y: 2 * pixel, width: rect.width, height: pixel))
+        return path
+    }
+}
+
+struct FoxTransferFeedback: View {
+    @ObservedObject var inbox: HandoffInbox
+    let address: String?
+    let device: String
+    var busy = false
+
+    var body: some View {
+        if let record = inbox.latestOutgoingFile(to: address) {
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: symbol(for: record.status))
+                    .foregroundStyle(record.status == .retry ? Color.orange : Color.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(record.title).lineLimit(1)
+                    Text(record.status == .delivered ? "Delivered to \(device)" : record.status.label)
+                        .foregroundStyle(record.status == .retry ? Color.orange : Color.secondary)
+                    if record.status == .retry, let reason = record.error {
+                        Text(reason).foregroundStyle(.secondary).lineLimit(3)
+                    }
+                }
+                Spacer(minLength: 2)
+                if record.status == .queued || record.status == .retry {
+                    Button("Retry") { Task { await inbox.retry(record) } }
+                        .accessibilityLabel("Retry \(record.title)")
+                        .disabled(busy)
+                } else if record.status == .delivered {
+                    Button("Show in Folder") { Task { await inbox.reveal(record) } }
+                }
+            }
+            .font(.caption)
+            .controlSize(.small)
+            .padding(8)
+            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private func symbol(for status: HandoffTransfer.Status) -> String {
+        switch status {
+        case .queued, .sending: "arrow.up.circle"
+        case .delivered: "checkmark.circle"
+        case .retry: "exclamationmark.circle"
+        }
     }
 }

@@ -36,6 +36,6 @@ This release ships source for a local build. A downloadable Mac installer needs 
 2. Time a first pairing on a clean Mac and verify which actions work on Omarchy, another Hyprland distro, and headless Linux.
 3. Test a Developer ID-signed, notarized Mac installer on a clean Mac.
 
-[Read the roadmap and acceptance tests](docs/ROADMAP.md).
+[Product vision](VISION.md) · [Roadmap and acceptance tests](docs/ROADMAP.md) · [Contributor instructions](AGENTS.md)
 
 [Development and upstream updates](docs/DEVELOPMENT.md) · [MIT license](LICENSE) · [Third-party notices](dependencies/licenses/README.md)

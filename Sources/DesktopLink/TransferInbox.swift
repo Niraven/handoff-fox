@@ -83,6 +83,13 @@ final class HandoffInbox: ObservableObject {
     private var openDesktop: ((String) -> Void)?
     private var active = Set<String>()
     private var staging = 0
+    private let sentFiles = PassthroughSubject<HandoffTransfer, Never>()
+
+    var fileDeliveries: AnyPublisher<HandoffTransfer, Never> { sentFiles.eraseToAnyPublisher() }
+
+    func latestOutgoingFile(to address: String?) -> HandoffTransfer? {
+        records.first { $0.address == address && $0.direction == .outgoing && $0.item.kind == "file" }
+    }
 
     init(storage: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Handoff Fox/Transfers", isDirectory: true),
@@ -329,6 +336,7 @@ final class HandoffInbox: ObservableObject {
             current.finish(path: path)
             try save(current)
             if record.item.kind == "file" { try? FileManager.default.removeItem(at: payload(record.item.id)) }
+            if current.item.kind == "file", current.path != nil { sentFiles.send(current) }
             return path
         } catch {
             try? saveFailure(record, error)

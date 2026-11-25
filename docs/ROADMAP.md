@@ -37,9 +37,9 @@ The first audience is people who work on a Mac and keep a Linux desktop or works
 
 ## Companion and agent workflows
 
-- The fox reacts to a reconnect and an observed job completion. Drop one file onto it to hand the file to the named device. The optional Linux job row opens the exact job for logs or artifacts. [Coucou’s character and session features](https://github.com/louis-cfm/coucou)
-- Add an optional completion or failure notification that opens the existing receipt or job. Group repeated alerts by device and ticket, and offer a mute control.
-- Pilot explicit status events from one agent runtime. Carry only the device, project, task ID, state, and a link to its own UI. Compare whether it saves time against the existing Linux job list before adding more adapters.
+- Pilot one fox with drop targeting, confirmed file delivery, and a visible retry. Compare it with the sample CLI session row in the [motion previews](../previews/fox-motion.html). The [vision](../VISION.md) defines when to advance the CLI row. [Coucou’s character and session features](https://github.com/louis-cfm/coucou)
+- Use the pilot to decide whether users need background alerts. A useful alert opens the existing receipt or job and can be muted.
+- If the CLI row advances, prototype status events from one runtime. Carry only the device, project, task ID, state, and a link to its own UI. Compare it with opening the existing Linux job for logs or artifacts.
 - Measure how often users finish a cross-device task without opening a file manager, terminal, or remote desktop. That should guide which actions earn a place in the fox.
 
 [Try the source preview](SETUP.md) · [Share feedback about your setup](https://github.com/Niraven/handoff-fox/issues/new?template=preview-feedback.md)

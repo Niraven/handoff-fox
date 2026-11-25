@@ -97,6 +97,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
             devices: workbenchModel,
             clipboardSync: clipboardSync,
             desktop: desktop,
+            inbox: inbox,
             close: { [weak self] in self?.popover.performClose(nil) },
             workbench: { [weak self] in self?.showWorkbench() }
         ))
@@ -266,7 +267,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
             window.isReleasedWhenClosed = false
             window.isFloatingPanel = true
             window.hidesOnDeactivate = false
-            let view = NSHostingController(rootView: QuickActions(model: workbenchModel, desktop: desktop,
+            let view = NSHostingController(rootView: QuickActions(model: workbenchModel, desktop: desktop, inbox: inbox,
                 close: { [weak window] in window?.orderOut(nil) },
                 workbench: { [weak self] in self?.showWorkbench() }))
             view.sizingOptions = [.preferredContentSize]
@@ -303,13 +304,12 @@ struct LinkPanel: View {
     @ObservedObject var devices: WorkbenchModel
     @ObservedObject var clipboardSync: ClipboardSync
     @ObservedObject var desktop: RemoteDesktop
+    @ObservedObject var inbox: HandoffInbox
     let close: () -> Void
     let workbench: () -> Void
     @AppStorage("foxShowsJobs") private var showsJobs = false
-    @State private var hoveringFox = false
     @State private var targetingFile = false
-    @State private var celebrating = false
-    @State private var celebration: Task<Void, Never>?
+    @State private var reaction = 0
     @State private var jobsReachable: Bool?
 
     private let ink = Color(red: 0.09, green: 0.06, blue: 0.13)
@@ -339,6 +339,8 @@ struct LinkPanel: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .tint(lilac)
+                FoxTransferFeedback(inbox: inbox, address: devices.selected, device: devices.selectedName,
+                                    busy: devices.running != nil)
                 if showsJobs { jobActivity }
                 if showsInput { deviceDetails }
             }
@@ -367,23 +369,22 @@ struct LinkPanel: View {
             }
         }
         .onChange(of: model.hop) { _, _ in
-            if showsInput { celebrate() }
+            if showsInput { reaction += 1 }
         }
         .onChange(of: devices.jobs) { previous, current in
             guard showsJobs else { return }
             let running = Set(previous.filter { $0.state.isActive }.map(\.id))
-            if current.contains(where: { $0.state == .succeeded && running.contains($0.id) }) { celebrate() }
+            if current.contains(where: { $0.state == .succeeded && running.contains($0.id) }) { reaction += 1 }
         }
-        .onDisappear {
-            celebration?.cancel()
-            celebrating = false
+        .onReceive(inbox.fileDeliveries) { file in
+            if inbox.latestOutgoingFile(to: devices.selected)?.id == file.id { reaction += 1 }
         }
+        .onDisappear { targetingFile = false }
     }
 
     private var header: some View {
         HStack(spacing: 9) {
-            FoxCompanion(attentive: hoveringFox || targetingFile, celebrating: celebrating)
-                .onHover { hoveringFox = $0 }
+            FoxCompanion(attentive: targetingFile, reaction: reaction)
             VStack(alignment: .leading, spacing: 2) {
                 Text(devices.selected == nil ? "Handoff Fox" : devices.selectedName)
                     .font(.system(size: 16, weight: .semibold))
@@ -395,7 +396,8 @@ struct LinkPanel: View {
                         .foregroundStyle(status.connected ? mint : muted)
                 }
                 if targetingFile, devices.selected != nil {
-                    Text("Drop to send").font(.caption).foregroundStyle(apricot)
+                    Text("Drop to send to \(devices.selectedName)").font(.caption).foregroundStyle(apricot)
+                        .lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
@@ -460,15 +462,6 @@ struct LinkPanel: View {
                     jobsReachable == true ? "No recent Linux jobs" : "Linux job status unavailable",
                   systemImage: "terminal")
                 .foregroundStyle(muted)
-        }
-    }
-
-    private func celebrate() {
-        celebration?.cancel()
-        celebrating = true
-        celebration = Task {
-            try? await Task.sleep(for: .milliseconds(230))
-            if !Task.isCancelled { celebrating = false }
         }
     }
 

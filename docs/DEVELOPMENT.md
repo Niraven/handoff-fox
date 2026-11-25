@@ -11,6 +11,8 @@ The Mac menu uses SwiftUI and AppKit. The Linux tray uses GTK 4 and D-Bus. The v
 
 GitHub Actions runs `bash script/check_mac.sh` on macOS and the receiver regression suite on Ubuntu. Use those same commands to reproduce a failure locally. The tests use temporary state and the workflow needs read access to the source.
 
+The Mac panel, Omarchy tray card, and [motion previews](../previews/fox-motion.html) share the resting and alert sprites in `assets/`. Keep their 22-pixel grid when updating the artwork. A sender celebrates after a transfer receipt or acknowledgment is recorded. The receiver test suite checks that a queued or missing ticket never reports delivery.
+
 ## Update upstream components
 
 The viewer builds from a checksum-pinned mac-gliff source release. `dependencies/mac-gliff-window-title.patch` adds the window title and Actual Size options. Retest both scaling modes and pointer alignment when updating the patch. Video, input, and reconnect come from upstream.

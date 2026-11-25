@@ -270,6 +270,28 @@ def save_transfer_receipt(path, value):
             temporary.unlink(missing_ok=True)
 
 
+def acknowledge_handoff(token):
+    receipts = transfer_receipts()
+    queued = OUTBOX / f"{token}.json"
+    with (receipts / "mac-files.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if queued.exists() and json.loads(queued.read_text()).get("kind") == "file":
+            save_transfer_receipt(receipts / f"mac-file-{token}.json", {"delivered": True})
+            confirmed = sorted(receipts.glob("mac-file-*.json"),
+                               key=lambda path: path.stat().st_mtime_ns, reverse=True)
+            for old in confirmed[100:]:
+                old.unlink(missing_ok=True)
+        queued.unlink(missing_ok=True)
+        (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
+
+
+def mac_file_status(token):
+    if (OUTBOX / f"{token}.json").is_file():
+        return "queued"
+    receipt = OUTBOX.with_name("receipts") / f"mac-file-{token}.json"
+    return "delivered" if receipt.is_file() else "unknown"
+
+
 def commit_upload(folder, staged, token, name, volume, size, digest):
     receipts = transfer_receipts()
     receipt = receipts / f"file-{token}.json"
@@ -1112,10 +1134,10 @@ def request(payload):
                 return {"handoffs": [json.loads(path.read_text()) for path in queued]}
             time.sleep(0.5)
     if action == "ack":
-        token = ticket_id(payload.get("project"))
-        (OUTBOX / f"{token}.json").unlink(missing_ok=True)
-        (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
+        acknowledge_handoff(ticket_id(payload.get("project")))
         return {}
+    if action == "mac-file-status":
+        return {"transferStatus": mac_file_status(ticket_id(payload.get("project")))}
     if action == "save":
         return save_project(payload.get("name"), payload.get("path"))
     if action in {"clipboard-put", "clipboard-get"}:

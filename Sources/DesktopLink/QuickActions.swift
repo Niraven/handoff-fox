@@ -3,12 +3,14 @@ import SwiftUI
 struct QuickActions: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var desktop: RemoteDesktop
+    @ObservedObject var inbox: HandoffInbox
     let close: () -> Void
     let workbench: () -> Void
 
     @State private var link = ""
     @State private var enteringLink = false
     @State private var targetingFile = false
+    @State private var reaction = 0
     @FocusState private var linkFocused: Bool
 
     private var desktopPeer: String? {
@@ -19,14 +21,17 @@ struct QuickActions: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 9) {
-                FoxCompanion(attentive: targetingFile, celebrating: false)
+                FoxCompanion(attentive: targetingFile, reaction: reaction)
                 VStack(alignment: .leading, spacing: 2) {
                     if let target = model.selected {
                         Text(model.deviceName(target)).font(.headline)
                     } else {
                         Text("Pair a Linux device").font(.headline)
                     }
-                    if targetingFile { Text("Drop to send").font(.caption).foregroundStyle(.secondary) }
+                    if targetingFile, let target = model.selected {
+                        Text("Drop to send to \(model.deviceName(target))")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
                 Spacer()
                 Button(model.selected == nil ? "Pair…" : "All controls", action: workbench)
@@ -82,6 +87,8 @@ struct QuickActions: View {
                 } else {
                     Button("Choose a saved project…", action: workbench).buttonStyle(.link)
                 }
+                FoxTransferFeedback(inbox: inbox, address: target, device: model.selectedName,
+                                    busy: model.running != nil)
             }
             if let detail = model.error ?? desktop.message ?? model.notice {
                 Text(detail).font(.caption).foregroundStyle(model.error != nil || desktop.message != nil ? Color.orange : .secondary)
@@ -92,6 +99,10 @@ struct QuickActions: View {
         .frame(width: 350, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .onExitCommand(perform: close)
+        .onDisappear { targetingFile = false }
+        .onReceive(inbox.fileDeliveries) { file in
+            if inbox.latestOutgoingFile(to: model.selected)?.id == file.id { reaction += 1 }
+        }
         .task(id: model.selected) {
             if let target = model.selected { await model.loadSelectedIfNeeded(target) }
         }

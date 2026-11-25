@@ -95,6 +95,27 @@ class TransferReceiptTests(unittest.TestCase):
         self.assertEqual(response["sha256"], checksum(body))
         self.assertEqual(Path(response["path"]).read_bytes(), body)
 
+    def test_mac_delivery_requires_an_acknowledged_file_ticket(self):
+        sample = self.root / "pilot.txt"
+        sample.write_text("A file for the Mac.")
+        queued = self.invoke(["--queue", "file", str(sample)], b"")["handoffs"][0]
+        token = queued["id"]
+
+        def request(action, ticket=token):
+            return self.invoke([], json.dumps({"version": 1, "action": action, "project": ticket}).encode())
+
+        self.assertEqual(request("mac-file-status")["transferStatus"], "queued")
+        self.assertEqual(request("mac-file-status", uuid.uuid4().hex)["transferStatus"], "unknown")
+        self.assertTrue(request("ack")["ok"])
+        self.assertEqual(request("mac-file-status")["transferStatus"], "delivered")
+        self.assertEqual(list((self.root / "state/desktop-link/outbox").iterdir()), [])
+        self.assertTrue(request("ack")["ok"])
+        self.assertEqual(request("mac-file-status")["transferStatus"], "delivered")
+
+        omitted = self.invoke(["--queue", "file", str(sample)], b"")["handoffs"][0]["id"]
+        (self.root / "state/desktop-link/outbox" / f"{omitted}.json").unlink()
+        self.assertEqual(request("mac-file-status", omitted)["transferStatus"], "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ autostart_root="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
 mkdir -p "$HOME/.local/bin" "$application_root" "$icon_root" "$autostart_root" "$data_home/desktop-link"
 install -m 644 "$root/assets/DesktopLink.png" "$icon_root/local.desktoplink.control.png"
 install -m 644 "$root/assets/TrayFox.png" "$data_home/desktop-link/TrayFox.png"
+install -m 644 "$root/assets/"Fox{Rest,Alert}.png "$data_home/desktop-link/"
 install -m 755 "$root/omarchy/desktop_link.py" "$HOME/.local/bin/desktop-link"
 desktop="$application_root/local.desktoplink.control.desktop"
 sed "s|^Exec=desktop-link$|Exec=\"$HOME/.local/bin/desktop-link\"|" \
