@@ -39,3 +39,6 @@ This release ships source for a local build. A downloadable Mac installer needs 
 [Product vision](VISION.md) · [Roadmap and acceptance tests](docs/ROADMAP.md) · [Contributor instructions](AGENTS.md)
 
 [Development and upstream updates](docs/DEVELOPMENT.md) · [MIT license](LICENSE) · [Third-party notices](dependencies/licenses/README.md)
+
+**Project files** · [Security policy](SECURITY.md) · [Receiver protocol](docs/PROTOCOL.md) · [Support matrix](docs/SUPPORT.md) · [Contributing](CONTRIBUTING.md)
+

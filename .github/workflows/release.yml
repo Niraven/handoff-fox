@@ -1,0 +1,100 @@
+name: Release Handoff Fox
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to build and publish
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Package the Mac app
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Cache the Gliff viewer build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/mac-gliff
+          key: mac-gliff-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('dependencies/mac-gliff.json') }}
+
+      - name: Install the Homebrew build dependencies
+        run: brew install pkg-config gtk4 libadwaita
+
+      - name: Run the Mac checks
+        run: bash script/check_mac.sh
+
+      - name: Build the app package
+        run: ./script/build_and_run.sh --package
+
+      - name: Collect the release assets
+        run: |
+          set -euo pipefail
+          zip="dist/Handoff Fox.zip"
+          if [[ ! -f "$zip" ]]; then
+            echo "::error::The package step did not produce $zip"
+            exit 1
+          fi
+          mkdir -p release
+          cp "$zip" release/Handoff-Fox.zip
+          tar -czf release/handoff-fox-linux-scripts.tar.gz \
+            script/install_peer.sh script/install_omarchy.sh script/install_hypr_hotkey.sh \
+            peer omarchy assets
+          ( cd release && shasum -a 256 Handoff-Fox.zip handoff-fox-linux-scripts.tar.gz > SHA256SUMS )
+          cat release/SHA256SUMS
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release/Handoff-Fox.zip
+            release/handoff-fox-linux-scripts.tar.gz
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          zip_sha="$(grep ' Handoff-Fox.zip$' release/SHA256SUMS | cut -d ' ' -f 1)"
+          {
+            printf 'Handoff Fox %s\n\n' "$RELEASE_TAG"
+            cat <<'NOTES'
+          Built on a macOS runner from the tagged source, with ad-hoc signing only. The app is
+          not Developer ID signed or notarized, so macOS treats the download as an app from the
+          internet and Gatekeeper will warn about it. Building from source, as in docs/SETUP.md,
+          is the path this preview has been exercised on.
+
+          Linux receiver and tray installers, with the files they install, laid out as in the
+          repository. Extract the archive and run script/install_peer.sh from inside it.
+          NOTES
+            printf '\nArchive SHA-256: %s\n\n' "$zip_sha"
+            cat <<'NOTES'
+          SHA256SUMS covers both archives. Build provenance for both is attached to this
+          repository.
+          NOTES
+          } > release/notes.md
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              release/Handoff-Fox.zip release/handoff-fox-linux-scripts.tar.gz release/SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              release/Handoff-Fox.zip release/handoff-fox-linux-scripts.tar.gz release/SHA256SUMS \
+              --title "Handoff Fox $RELEASE_TAG" --notes-file release/notes.md
+          fi
