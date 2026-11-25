@@ -204,7 +204,9 @@ class SshdRoundTripTests(HomeTestCase):
         super().setUp()
         probe = self.ssh("true")
         if probe.returncode != 0:
-            self.skipTest("this sshd will not authenticate: " + self.log_tail())
+            detail = probe.stderr.decode(errors="replace").strip().splitlines()
+            self.skipTest("this sshd will not authenticate: "
+                          + (detail[-1] if detail else self.log_tail()))
 
     def test_a_missing_receiver_fails_with_the_exit_code_the_app_maps(self):
         run = self.ssh(REMOTE_COMMAND, b'{"version": 1, "action": "pair"}')
