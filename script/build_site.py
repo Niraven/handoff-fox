@@ -414,17 +414,17 @@ class Markdown:
         target = self.definitions.get(name.lower())
         if not target:
             return match.group(0)
-        return f'<a href="{self.site.href(self.source, target)}">{name}</a>'
+        return f'<a href="{attribute(self.site.href(self.source, target))}">{name}</a>'
 
     def image(self, match):
         alt, target = match.group(1), match.group(2)
         title = f' title="{attribute(match.group(3))}"' if match.group(3) else ""
-        return f'<img src="{self.site.href(self.source, target)}" alt="{alt}"{title} loading="lazy">'
+        return f'<img src="{attribute(self.site.href(self.source, target))}" alt="{attribute(alt)}"{title} loading="lazy">'
 
     def link(self, match):
         label, target = match.group(1), match.group(2)
         title = f' title="{attribute(match.group(3))}"' if match.group(3) else ""
-        return f'<a href="{self.site.href(self.source, target)}"{title}>{label}</a>'
+        return f'<a href="{attribute(self.site.href(self.source, target))}"{title}>{label}</a>'
 
 
 CSS = """

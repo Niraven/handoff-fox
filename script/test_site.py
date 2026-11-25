@@ -179,6 +179,14 @@ class InlineRenderingTests(unittest.TestCase):
         self.assertIn('"Pair"', page)
         self.assertNotIn("&quot;", page)
 
+    def test_quotes_in_alt_and_url_attributes_are_escaped(self):
+        image = self.render('![say "hi"](assets/TrayFox.png)')
+        self.assertIn('alt="say &quot;hi&quot;"', image)
+        page = self.render('[x](https://example.com/a"b)')
+        self.assertIn('href="https://example.com/a&quot;b"', page)
+        image_src = self.render('![fox](https://example.com/a"b.png)')
+        self.assertIn('src="https://example.com/a&quot;b.png"', image_src)
+
     def test_unknown_citation_stays_text(self):
         page = self.render("Verified [3][7] on Omarchy.")
         self.assertIn("[3][7]", page)
