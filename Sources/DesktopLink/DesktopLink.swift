@@ -583,7 +583,7 @@ struct LinkPanel: View {
             .foregroundStyle(palette.textSecondary)
             .padding(.horizontal, 8)
             .frame(height: 30)
-            .background(palette.raised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(palette.sunken, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(palette.border))
         }
         .menuIndicator(.hidden)

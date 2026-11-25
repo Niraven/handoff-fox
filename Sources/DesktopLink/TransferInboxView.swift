@@ -11,11 +11,19 @@ struct TransferInboxView: View {
     private var palette: FoxPalette { FoxPalette(scheme: scheme) }
 
     private var transfers: [HandoffTransfer] {
-        inbox.records.filter { address == nil || $0.address == address }
+        guard let address else { return inbox.records }
+        return inbox.records.filter { record in record.address == address }
     }
 
     private var unfinished: Int {
-        transfers.filter { $0.status == .queued || $0.status == .sending || $0.status == .retry }.count
+        var count = 0
+        for record in transfers {
+            switch record.status {
+            case .queued, .sending, .retry: count += 1
+            case .delivered: break
+            }
+        }
+        return count
     }
 
     var body: some View {
@@ -34,7 +42,7 @@ struct TransferInboxView: View {
                             .foregroundStyle(palette.textSecondary)
                             .padding(.horizontal, 5)
                             .frame(height: 16)
-                            .background(palette.raised, in: Capsule())
+                            .background(palette.sunken, in: Capsule())
                     }
                     Spacer(minLength: 0)
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
