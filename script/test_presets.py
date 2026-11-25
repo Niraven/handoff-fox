@@ -72,6 +72,13 @@ class SavePresetTests(unittest.TestCase):
                                           "argv": ["./test.sh", "--fast"],
                                           "artifact": "out/report.txt"}])
 
+    def test_slash_free_command_is_stored_as_a_project_path(self):
+        self.script()
+        reply = self.save("Test", ["test.sh", "--fast"])
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual(self.stored(), [{"id": "test", "name": "Test",
+                                          "argv": ["./test.sh", "--fast"]}])
+
     def test_nonexecutable_file_is_refused(self):
         self.script(mode=0o644)
         reply = self.save("Test", ["./test.sh"])

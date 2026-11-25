@@ -137,6 +137,8 @@ def preset_argv(directory, argv):
         raise RequestError("The preset command must be an executable file inside the project.") from error
     if not S_ISREG(status.st_mode) or not status.st_mode & S_IXUSR:
         raise RequestError("The preset command must be an executable file inside the project.")
+    if "/" not in argv[0]:
+        argv = [f"./{argv[0]}", *argv[1:]]
     return argv
 
 
