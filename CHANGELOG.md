@@ -4,6 +4,8 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.1.1-preview.2] - 2026-11-25
+
 ### Added
 
 - **Transfer Inbox** with a durable ticket per handoff. Items show Queued, Sending, Delivered, or Retry, the destination is named before sending, and a retry after an interrupted send resolves to the same delivery receipt instead of a second copy.
@@ -53,5 +55,6 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 - Build and install scripts for both halves: `--verify`, `--install`, and an ad-hoc signed `--package` test ZIP, plus installers for the receiver, the tray, and the Hyprland hotkey.
 - Third-party notices and the pinned upstream manifests for the bundled viewer and keymap patches.
 
-[Unreleased]: https://github.com/Niraven/handoff-fox/compare/v0.1.0-preview.1...HEAD
+[Unreleased]: https://github.com/Niraven/handoff-fox/compare/v0.1.1-preview.2...HEAD
+[0.1.1-preview.2]: https://github.com/Niraven/handoff-fox/releases/tag/v0.1.1-preview.2
 [0.1.0-preview.1]: https://github.com/Niraven/handoff-fox/releases/tag/v0.1.0-preview.1
