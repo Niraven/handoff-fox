@@ -264,7 +264,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
             return
         }
         if quickWindow == nil {
-            let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 350, height: 210),
+            let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 332, height: 198),
                                  styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
             window.title = "Handoff Fox Quick Actions"
             window.isReleasedWhenClosed = false
@@ -348,7 +348,7 @@ struct LinkPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 9) {
             header
             if devices.selected == nil {
                 firstRun
@@ -370,8 +370,8 @@ struct LinkPanel: View {
             }
             footer
         }
-        .padding(14)
-        .frame(width: 292, alignment: .leading)
+        .padding(12)
+        .frame(width: 264, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .onExitCommand(perform: close)
         .task(id: showsJobs ? devices.selected : nil) {

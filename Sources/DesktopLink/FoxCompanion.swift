@@ -5,12 +5,15 @@ struct FoxCompanion: View {
     let attentive: Bool
     let reaction: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
     @State private var jumping = false
+    @State private var delivered = false
     @State private var landing: Task<Void, Never>?
 
     private static let resting = NSImage(named: "FoxRest")
     private static let alert = NSImage(named: "FoxAlert")
+    private var palette: FoxPalette { FoxPalette(scheme: scheme) }
     private var perked: Bool { hovering || attentive }
 
     var body: some View {
@@ -19,34 +22,43 @@ struct FoxCompanion: View {
                 if let sprite = perked ? Self.alert : Self.resting {
                     Image(nsImage: sprite).resizable().interpolation(.none)
                 } else {
-                    Image(systemName: "pawprint.fill").foregroundStyle(.orange)
+                    Image(systemName: "pawprint.fill").foregroundStyle(palette.accent)
                 }
             }
-            .frame(width: 44, height: 44)
-            .rotationEffect(.degrees(!reduceMotion && perked ? -5 : 0))
-            .offset(y: jumping ? -4 : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: perked)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.11), value: jumping)
+            .frame(width: 34, height: 34)
+            .rotationEffect(.degrees(!reduceMotion && perked ? -4 : 0))
+            .scaleEffect(!reduceMotion && attentive ? 1.05 : 1)
+            .offset(y: jumping ? -7 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: perked)
+            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.78), value: jumping)
 
-            if jumping {
+            if jumping && !reduceMotion {
                 PixelSpark()
-                    .fill(Color(red: 1, green: 0.91, blue: 0.68))
-                    .frame(width: 10, height: 10)
-                    .offset(x: 3, y: -2)
+                    .fill(palette.warning)
+                    .frame(width: 9, height: 9)
+                    .offset(x: 2, y: -3)
+                    .transition(.opacity)
+            }
+            if delivered {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(palette.success)
+                    .background(Circle().fill(palette.raisedBottom).padding(-1.5))
+                    .offset(x: 2, y: -2)
+                    .transition(.opacity)
             }
         }
-        .frame(width: 44, height: 44)
-        .background(Color(red: 0.18, green: 0.12, blue: 0.23), in: RoundedRectangle(cornerRadius: 11))
+        .frame(width: 38, height: 38)
+        .background(
+            LinearGradient(colors: [palette.raisedTop, palette.sunken],
+                           startPoint: .topLeading, endPoint: .bottomTrailing),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(palette.border))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onChange(of: reaction) { _, _ in
-            guard !reduceMotion else { return }
-            landing?.cancel()
-            jumping = true
-            landing = Task {
-                try? await Task.sleep(for: .milliseconds(130))
-                if !Task.isCancelled { jumping = false }
-            }
+            celebrate()
         }
         .onChange(of: reduceMotion) { _, reduced in
             if reduced { settle() }
@@ -58,9 +70,25 @@ struct FoxCompanion: View {
         .accessibilityHidden(true)
     }
 
+    /// A delivered handoff gets a lift and a spark, or just the badge when motion is reduced.
+    private func celebrate() {
+        landing?.cancel()
+        delivered = true
+        if !reduceMotion { jumping = true }
+        landing = Task {
+            if !reduceMotion {
+                try? await Task.sleep(for: .milliseconds(150))
+                if !Task.isCancelled { jumping = false }
+            }
+            try? await Task.sleep(for: .seconds(2.6))
+            if !Task.isCancelled { delivered = false }
+        }
+    }
+
     private func settle() {
         landing?.cancel()
         jumping = false
+        delivered = false
     }
 }
 

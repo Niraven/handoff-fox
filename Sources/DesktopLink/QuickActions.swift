@@ -22,7 +22,7 @@ struct QuickActions: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 9) {
             header
             if model.selected != nil {
                 if let desktopPeer {
@@ -61,8 +61,8 @@ struct QuickActions: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(14)
-        .frame(width: 350, alignment: .leading)
+        .padding(12)
+        .frame(width: 332, alignment: .leading)
         .onExitCommand(perform: close)
         .onDisappear {
             targetingFile = false

@@ -204,7 +204,7 @@ struct OpenDesktopMenu: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(palette.onAccent)
-                        .frame(width: 34, height: 40)
+                        .frame(width: 32, height: 36)
                         .contentShape(Rectangle())
                 }
                 .menuIndicator(.hidden)

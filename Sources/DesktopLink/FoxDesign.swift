@@ -1,51 +1,64 @@
 import SwiftUI
 
+/// Colours sampled from the fox sprites, so the interface and the mascot agree:
+/// rust `#E87B46`, apricot `#FFA564`, cream `#FFDEA6`, wine `#914554`.
 struct FoxPalette {
     let scheme: ColorScheme
 
     private var dark: Bool { scheme == .dark }
 
     var accent: Color {
-        dark ? Color(red: 0.82, green: 0.72, blue: 0.99) : Color(red: 0.42, green: 0.25, blue: 0.65)
+        dark ? Color(red: 0.94, green: 0.54, blue: 0.33) : Color(red: 0.73, green: 0.29, blue: 0.14)
     }
     var onAccent: Color {
-        dark ? Color(red: 0.10, green: 0.07, blue: 0.15) : .white
+        dark ? Color(red: 0.12, green: 0.07, blue: 0.03) : .white
     }
-    var raised: Color {
-        dark ? Color.white.opacity(0.07) : Color.black.opacity(0.035)
+    var raisedTop: Color {
+        dark ? Color.white.opacity(0.085) : Color.white
+    }
+    var raisedBottom: Color {
+        dark ? Color.white.opacity(0.025) : Color(red: 0.98, green: 0.965, blue: 0.95)
     }
     var sunken: Color {
-        dark ? Color.black.opacity(0.22) : Color.black.opacity(0.045)
+        dark ? Color.black.opacity(0.24) : Color(red: 0.965, green: 0.95, blue: 0.937)
     }
     var border: Color {
-        dark ? Color.white.opacity(0.13) : Color.black.opacity(0.09)
+        dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08)
+    }
+    var borderStrong: Color {
+        dark ? Color.white.opacity(0.16) : Color.black.opacity(0.13)
+    }
+    var shadow: Color {
+        dark ? Color.black.opacity(0.34) : Color.black.opacity(0.07)
     }
     var textPrimary: Color {
-        dark ? Color(red: 0.96, green: 0.95, blue: 0.98) : Color(red: 0.11, green: 0.09, blue: 0.15)
+        dark ? Color(red: 0.96, green: 0.93, blue: 0.91) : Color(red: 0.12, green: 0.09, blue: 0.08)
     }
     var textSecondary: Color {
-        dark ? Color(red: 0.76, green: 0.73, blue: 0.83) : Color(red: 0.35, green: 0.33, blue: 0.42)
+        dark ? Color(red: 0.78, green: 0.72, blue: 0.68) : Color(red: 0.36, green: 0.31, blue: 0.29)
     }
     var textTertiary: Color {
-        dark ? Color(red: 0.58, green: 0.55, blue: 0.66) : Color(red: 0.48, green: 0.46, blue: 0.55)
+        dark ? Color(red: 0.58, green: 0.52, blue: 0.49) : Color(red: 0.54, green: 0.49, blue: 0.46)
     }
     var success: Color {
-        dark ? Color(red: 0.60, green: 0.90, blue: 0.76) : Color(red: 0.05, green: 0.44, blue: 0.30)
+        dark ? Color(red: 0.44, green: 0.83, blue: 0.64) : Color(red: 0.10, green: 0.50, blue: 0.33)
     }
     var warning: Color {
-        dark ? Color(red: 1.0, green: 0.79, blue: 0.55) : Color(red: 0.62, green: 0.35, blue: 0.03)
+        dark ? Color(red: 0.94, green: 0.71, blue: 0.36) : Color(red: 0.66, green: 0.38, blue: 0.10)
     }
     var danger: Color {
-        dark ? Color(red: 1.0, green: 0.64, blue: 0.63) : Color(red: 0.68, green: 0.13, blue: 0.16)
+        dark ? Color(red: 0.94, green: 0.54, blue: 0.50) : Color(red: 0.70, green: 0.21, blue: 0.18)
     }
 }
 
 extension View {
-    func foxCard(raised: Bool = true, radius: CGFloat = 12) -> some View {
+    func foxCard(raised: Bool = true, radius: CGFloat = 11) -> some View {
         modifier(FoxCard(raised: raised, radius: radius))
     }
 }
 
+/// A card that sits on the surface rather than being painted into it: a shallow
+/// vertical gradient, a lit top edge, a hairline border and one soft shadow.
 private struct FoxCard: ViewModifier {
     @Environment(\.colorScheme) private var scheme
     let raised: Bool
@@ -55,10 +68,21 @@ private struct FoxCard: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(raised ? palette.raised : palette.sunken,
-                        in: RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(palette.border))
+            .background(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(LinearGradient(
+                        colors: raised ? [palette.raisedTop, palette.raisedBottom] : [palette.sunken, palette.sunken],
+                        startPoint: .top,
+                        endPoint: .bottom))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(LinearGradient(
+                        colors: [palette.borderStrong, palette.border],
+                        startPoint: .top,
+                        endPoint: .bottom), lineWidth: 1)
+            )
+            .shadow(color: palette.shadow, radius: raised ? 5 : 0, x: 0, y: raised ? 2 : 0)
     }
 }
 
@@ -70,12 +94,21 @@ struct FoxPrimaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: compact ? 12 : 13, weight: .semibold))
+            .font(.system(size: compact ? 11.5 : 12.5, weight: .semibold))
             .foregroundStyle(palette.onAccent)
-            .frame(maxWidth: .infinity, minHeight: compact ? 30 : 40)
-            .padding(.horizontal, 10)
-            .background(palette.accent.opacity(configuration.isPressed ? 0.82 : 1),
-                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .frame(maxWidth: .infinity, minHeight: compact ? 28 : 36)
+            .padding(.horizontal, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(LinearGradient(colors: [palette.accent, palette.accent.opacity(configuration.isPressed ? 0.75 : 0.88)],
+                                         startPoint: .top, endPoint: .bottom))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(palette.onAccent.opacity(0.12))
+            )
+            .shadow(color: palette.accent.opacity(configuration.isPressed ? 0 : 0.28),
+                    radius: 4, x: 0, y: 1)
             .contentShape(Rectangle())
     }
 }
@@ -88,14 +121,20 @@ struct FoxSecondaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: compact ? 11 : 12, weight: .medium))
+            .font(.system(size: compact ? 10.5 : 11.5, weight: .medium))
             .foregroundStyle(palette.textPrimary)
-            .padding(.horizontal, 9)
-            .frame(minHeight: compact ? 24 : 30)
-            .background(palette.raised.opacity(configuration.isPressed ? 0.55 : 1),
-                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(palette.border))
+            .padding(.horizontal, 8)
+            .frame(minHeight: compact ? 24 : 28)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(LinearGradient(colors: [palette.raisedTop, palette.raisedBottom],
+                                         startPoint: .top, endPoint: .bottom))
+                    .opacity(configuration.isPressed ? 0.6 : 1)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(palette.border)
+            )
             .contentShape(Rectangle())
     }
 }
@@ -107,11 +146,11 @@ struct FoxIconButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(palette.textSecondary)
-            .frame(width: 28, height: 28)
-            .background(configuration.isPressed ? palette.raised : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .frame(width: 26, height: 26)
+            .background(configuration.isPressed ? palette.sunken : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .contentShape(Rectangle())
     }
 }
@@ -163,12 +202,12 @@ struct FoxStatusLine: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             Circle()
                 .fill(dot)
-                .frame(width: compact ? 5 : 6, height: compact ? 5 : 6)
+                .frame(width: compact ? 4.5 : 5.5, height: compact ? 4.5 : 5.5)
             Text(reachability.summary)
-                .font(.system(size: compact ? 10 : 11, weight: .medium))
+                .font(.system(size: compact ? 9.5 : 10.5, weight: .medium))
                 .foregroundStyle(label)
                 .lineLimit(1)
                 .truncationMode(.tail)
