@@ -36,7 +36,7 @@ release_value() {
 
 field() {
     # field JSON NAME -> first value of "NAME": "text" in the reply
-    sed -n "s/.*\"$2\": \"\([^\"]*\)\".*/\1/p" <<<"$1" | head -1
+    grep -o "\"$2\": \"[^\"]*\"" <<<"$1" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true
 }
 
 distro_id="$(release_value ID)"
@@ -56,10 +56,10 @@ elif [ -n "${DISPLAY:-}" ]; then
     session="X11 (${DISPLAY})"
 fi
 
-protocol="$(sed -n 's/^VERSION = \(.*\)$/\1/p' "$peer" 2>/dev/null | head -1)"
+protocol="$(sed -n 's/^VERSION = \(.*\)$/\1/p' "$peer" 2>/dev/null | head -1 || true)"
 request() {
     printf '{"version": %s, "action": "%s"}\n' "${protocol:-1}" "$1" \
-        | python3 -B "$peer" 2>/dev/null | tail -1
+        | python3 -B "$peer" 2>/dev/null | tail -1 || true
 }
 
 started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -144,7 +144,7 @@ Run these from the Mac against this host; they are the cells this script cannot 
 - [ ] Run one approved job preset, read its exit code and logs, fetch a verified artifact
 - [ ] Open the tray card and the quick panel on this host
 MAC
-} | tee "${report:-/dev/stdout}"
+} | if [ -n "$report" ]; then tee "$report"; else cat; fi
 
 if [ "$failures" -gt 0 ]; then
     printf '\n%d host-side stage(s) failed.\n' "$failures" >&2
