@@ -40,5 +40,5 @@ This release ships source for a local build. A downloadable Mac installer needs 
 
 [Development and upstream updates](docs/DEVELOPMENT.md) · [MIT license](LICENSE) · [Third-party notices](dependencies/licenses/README.md)
 
-**Project files** · [Security policy](SECURITY.md) · [Receiver protocol](docs/PROTOCOL.md) · [Support matrix](docs/SUPPORT.md) · [Contributing](CONTRIBUTING.md)
+**Project files** · [Security policy](SECURITY.md) · [Receiver protocol](docs/PROTOCOL.md) · [Support matrix](docs/SUPPORT.md) · [Architecture](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
