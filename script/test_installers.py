@@ -109,6 +109,22 @@ class TrayInstallerTests(InstallerTestCase):
         self.assertEqual(json.loads(run.stdout.strip().splitlines()[-1]),
                          {"active": False, "connected": False})
 
+    def test_removes_legacy_launchers_on_upgrade(self):
+        data = Path(self.env["XDG_DATA_HOME"])
+        config = Path(self.env["XDG_CONFIG_HOME"])
+        icon = data / "icons/hicolor/512x512/apps/local.desktoplink.control.png"
+        launcher = data / "applications/local.desktoplink.control.desktop"
+        autostart = config / "autostart/local.desktoplink.control.desktop"
+        for path in (icon, launcher, autostart):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("legacy\n")
+        self.install()
+        for path in (icon, launcher, autostart):
+            self.assertFalse(path.exists(), f"{path.name} was left behind")
+        self.assertEqual(len(list((data / "applications").glob("*.desktop"))), 1)
+        self.assertEqual(len(list((config / "autostart").glob("*.desktop"))), 1)
+        self.assertEqual(len(list((data / "icons/hicolor/512x512/apps").glob("*.png"))), 1)
+
 
 class HotkeyInstallerTests(InstallerTestCase):
     def setUp(self):

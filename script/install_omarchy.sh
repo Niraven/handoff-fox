@@ -7,6 +7,9 @@ application_root="$data_home/applications"
 icon_root="$data_home/icons/hicolor/512x512/apps"
 autostart_root="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
 mkdir -p "$HOME/.local/bin" "$application_root" "$icon_root" "$autostart_root" "$data_home/desktop-link"
+rm -f "$icon_root/local.desktoplink.control.png" \
+    "$application_root/local.desktoplink.control.desktop" \
+    "$autostart_root/local.desktoplink.control.desktop"
 install -m 644 "$root/assets/DesktopLink.png" "$icon_root/io.github.niraven.handofffox.png"
 install -m 644 "$root/assets/TrayFox.png" "$data_home/desktop-link/TrayFox.png"
 install -m 644 "$root/assets/"Fox{Rest,Alert}.png "$data_home/desktop-link/"
