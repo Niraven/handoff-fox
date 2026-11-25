@@ -60,7 +60,7 @@ uv run --with 'mcp>=2,<3' python /absolute/path/to/script/handoff-fox-jobs.py us
 ## Preview verification
 
 - On Apple Silicon and Omarchy, the installed Mac app opened both a physical mirror and a separate virtual screen over Tailscale. The private screen accepted keyboard input with Shift and punctuation.
-- The updated viewer opened a Citadel private screen in Actual Size and recovered an interrupted SSH connection in the same process. Both laptops stayed awake during verification. Physical sleep and wake remain untested.
+- The viewer opened a private screen in Actual Size and recovered an interrupted SSH connection in the same process. The Omarchy laptop later suspended, resumed, and re-established keyboard and mouse sharing. The Apple Silicon Mac recorded a brief sleep and wake, with the same Mirror viewer present afterward. A sustained Mac sleep and a switch between LAN and Tailscale still need verification.
 - An isolated receiver test rejected an unknown host key, installed on a verified login, and preserved the existing receiver on repeat pairing.
 - Disposable clipboard and file fixtures passed both clipboard directions and checksum verification for file delivery. The Waynergy patch applied at its pinned revision.
 - The Mac shortcut and the Citadel tray opened their quick panels.
