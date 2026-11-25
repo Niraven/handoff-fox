@@ -116,7 +116,6 @@ struct TransferInboxView: View {
             if transfer.status == .retry || transfer.status == .queued {
                 Button("Retry") { Task { await inbox.retry(transfer) } }
                     .buttonStyle(FoxSecondaryButtonStyle(compact: true))
-                    .disabled(transfer.direction == .incoming)
                 if transfer.direction == .outgoing {
                     Button("Discard") { discardCandidate = transfer }
                         .buttonStyle(FoxSecondaryButtonStyle(compact: true))

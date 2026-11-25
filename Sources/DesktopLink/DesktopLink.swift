@@ -111,7 +111,6 @@ final class LinkController: NSObject, NSApplicationDelegate {
         redraw()
         model.$status.sink { [weak self] value in
             guard let self else { return }
-            self.menuItem.button?.toolTip = self.model.inputPeerAddress.flatMap { _ in value?.title } ?? "Handoff Fox"
             self.updateClipboard(inputConnected: value?.connected == true, desktopHost: self.desktop.activeHost,
                                  selected: self.workbenchModel.selected)
         }.store(in: &observations)
@@ -122,6 +121,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
         }.store(in: &observations)
         workbenchModel.$selected.removeDuplicates().sink { [weak self] address in
             guard let self else { return }
+            self.redraw()
             self.updateClipboard(inputConnected: self.model.status?.connected == true, desktopHost: self.desktop.activeHost,
                                  selected: address)
         }.store(in: &observations)
@@ -602,7 +602,7 @@ struct LinkPanel: View {
                 .onSubmit(sendLink)
             Button("Open", action: sendLink)
                 .buttonStyle(FoxPrimaryButtonStyle(compact: true))
-                .disabled(FileHandoff.browserURL(link.trimmingCharacters(in: .whitespacesAndNewlines)) == nil)
+                .disabled(devices.running != nil || FileHandoff.browserURL(link.trimmingCharacters(in: .whitespacesAndNewlines)) == nil)
         }
     }
 
@@ -700,6 +700,7 @@ struct LinkPanel: View {
         let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
         guard FileHandoff.browserURL(text) != nil else { return }
         Task {
+            guard devices.running == nil else { return }
             await devices.openLink(text)
             if devices.error == nil {
                 link = ""
