@@ -132,6 +132,9 @@ final class LinkController: NSObject, NSApplicationDelegate {
             self?.warning = warning
             self?.redraw()
         }.store(in: &observations)
+        workbenchModel.$reachability.dropFirst().sink { [weak self] _ in
+            self?.redraw()
+        }.store(in: &observations)
         model.$hop.dropFirst().sink { [weak self] _ in
             guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
             self?.redraw(lift: 2)
@@ -187,6 +190,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
         } else if let button = menuItem.button {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             Task { await model.loadActivity() }
+            Task { await workbenchModel.prewarm() }
         }
     }
 
@@ -261,7 +265,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
             return
         }
         if quickWindow == nil {
-            let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 350, height: 210),
+            let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 332, height: 198),
                                  styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
             window.title = "Handoff Fox Quick Actions"
             window.isReleasedWhenClosed = false
@@ -284,10 +288,13 @@ final class LinkController: NSObject, NSApplicationDelegate {
             menuItem.button?.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil)
             return
         }
+        let reachability = workbenchModel.reachability(for: workbenchModel.selected)
+        let dimmed = reachability.isUnreachable
         let needsAttention = warning
         let image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { _ in
             NSGraphicsContext.current?.imageInterpolation = .none
-            art.draw(in: NSRect(x: 1, y: lift, width: 18, height: 18))
+            art.draw(in: NSRect(x: 1, y: lift, width: 18, height: 18),
+                     from: .zero, operation: .sourceOver, fraction: dimmed ? 0.45 : 1)
             if needsAttention {
                 NSColor.black.setFill()
                 NSBezierPath(ovalIn: NSRect(x: 15, y: 14, width: 4, height: 4)).fill()
@@ -296,8 +303,13 @@ final class LinkController: NSObject, NSApplicationDelegate {
         }
         image.isTemplate = true
         menuItem.button?.image = image
+        menuItem.button?.toolTip = workbenchModel.selected == nil
+            ? "Handoff Fox"
+            : "\(workbenchModel.selectedName) · \(reachability.summary)"
+        menuItem.button?.setAccessibilityValue(reachability.summary)
     }
 }
+
 
 struct LinkPanel: View {
     @ObservedObject var model: LinkModel
@@ -307,55 +319,63 @@ struct LinkPanel: View {
     @ObservedObject var inbox: HandoffInbox
     let close: () -> Void
     let workbench: () -> Void
+
     @AppStorage("foxShowsJobs") private var showsJobs = false
+    @AppStorage("foxShowsAgents") private var showsAgents = false
     @State private var targetingFile = false
     @State private var reaction = 0
     @State private var jobsReachable: Bool?
+    @State private var pairingAddress = ""
+    @State private var pairing = false
+    @State private var enteringLink = false
+    @State private var link = ""
+    @FocusState private var pairFocused: Bool
+    @FocusState private var linkFocused: Bool
+    @Environment(\.colorScheme) private var scheme
 
-    private let ink = Color(red: 0.09, green: 0.06, blue: 0.13)
-    private let plum = Color(red: 0.16, green: 0.10, blue: 0.23)
-    private let mint = Color(red: 0.71, green: 0.92, blue: 0.83)
-    private let muted = Color(red: 0.83, green: 0.78, blue: 0.90)
-    private let lilac = Color(red: 0.83, green: 0.73, blue: 0.99)
-    private let apricot = Color(red: 1.0, green: 0.76, blue: 0.61)
-
+    private var palette: FoxPalette { FoxPalette(scheme: scheme) }
+    private var reachability: PeerReachability { devices.reachability(for: devices.selected) }
     private var showsInput: Bool {
         model.inputPeerAddress != nil && model.inputPeerAddress == devices.selected
     }
+    private var trimmedPair: String {
+        pairingAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var noticeLine: (text: String, symbol: String, tone: Color)? {
+        if let error = devices.error { return (error, "exclamationmark.circle", palette.danger) }
+        if let message = desktop.message { return (message, "display.trianglebadge.exclamationmark", palette.warning) }
+        if let feedback = devices.clipboardFeedback { return (feedback, "clipboard", palette.textSecondary) }
+        return nil
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 9) {
             header
             if devices.selected == nil {
-                Button(action: workbench) { primaryLabel("Pair Linux", symbol: "plus") }
-                    .buttonStyle(.plain)
+                firstRun
             } else {
-                OpenDesktopMenu(desktop: desktop, address: devices.selected, accent: lilac)
-                HStack(spacing: 6) {
-                    Button(action: workbench) { Label("Send & projects", systemImage: "arrow.left.arrow.right") }
-                        .help("Open handoff and projects · Control Option J")
-                    ClipboardMenu(model: devices, sync: clipboardSync)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .tint(lilac)
+                OpenDesktopMenu(desktop: desktop, address: devices.selected)
+                if reachability.isUnreachable { recovery }
+                sendRow
+                if enteringLink { linkRow }
                 FoxTransferFeedback(inbox: inbox, address: devices.selected, device: devices.selectedName,
                                     busy: devices.running != nil)
+                lastProject
                 if showsJobs { jobActivity }
-                if showsInput { deviceDetails }
+                if showsAgents, !devices.agentsUnavailable { agentRow }
             }
-            if let feedback = desktop.message ?? devices.error ?? model.message ?? devices.clipboardFeedback ?? devices.notice {
-                Text(feedback)
-                    .foregroundStyle(desktop.message != nil || devices.error != nil || model.message != nil ? .pink : muted)
+            if let line = noticeLine {
+                Label(line.text, systemImage: line.symbol)
+                    .font(.system(size: 11))
+                    .foregroundStyle(line.tone)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            footer
         }
-        .font(.system(size: 12))
-        .padding(16)
-        .frame(width: 278, alignment: .leading)
+        .padding(12)
+        .frame(width: 264, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .background(LinearGradient(colors: [plum, ink], startPoint: .topTrailing, endPoint: .bottomLeading))
-        .preferredColorScheme(.dark)
         .onExitCommand(perform: close)
         .task(id: showsJobs ? devices.selected : nil) {
             jobsReachable = nil
@@ -379,54 +399,286 @@ struct LinkPanel: View {
         .onReceive(inbox.fileDeliveries) { file in
             if inbox.latestOutgoingFile(to: devices.selected)?.id == file.id { reaction += 1 }
         }
-        .onDisappear { targetingFile = false }
+        .onChange(of: devices.selected) { _, _ in
+            enteringLink = false
+            link = ""
+        }
+        .task(id: showsAgents ? devices.selected : nil) {
+            guard showsAgents else { return }
+            await devices.loadAgents()
+        }
+        .onDisappear {
+            targetingFile = false
+            enteringLink = false
+        }
     }
 
     private var header: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 10) {
             FoxCompanion(attentive: targetingFile, reaction: reaction)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(devices.selected == nil ? "Handoff Fox" : devices.selectedName)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(devices.selected.map { devices.deviceName($0) } ?? "Handoff Fox")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
                     .lineLimit(1)
-                if let status = showsInput ? model.status : nil {
-                    Label(status.connected ? "Input connected" : status.title, systemImage: "circle.fill")
-                        .labelStyle(CompactStatusLabel())
-                        .foregroundStyle(status.connected ? mint : muted)
+                    .truncationMode(.middle)
+                if devices.selected != nil {
+                    FoxStatusLine(reachability: reachability)
+                } else {
+                    Text("No Linux computer paired")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(palette.textTertiary)
                 }
                 if targetingFile, devices.selected != nil {
-                    Text("Drop to send to \(devices.selectedName)").font(.caption).foregroundStyle(apricot)
+                    Text("Drop to send to \(devices.selectedName)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(palette.accent)
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
+            optionsMenu
+        }
+        .padding(10)
+        .foxCard()
+        .dropDestination(for: URL.self) { items, _ in devices.acceptFileDrop(items) } isTargeted: { value in
+            targetingFile = value && devices.selected != nil && devices.running == nil
+        }
+    }
+
+    private var optionsMenu: some View {
+        Menu {
+            if devices.selected != nil {
+                Button("Send a link…") {
+                    enteringLink = true
+                    linkFocused = true
+                }
+                Button("Send a screenshot…") { devices.chooseFile(imagesOnly: true) }
+                Button("Choose receive folder…") { devices.chooseReceiveFolder() }
+                Divider()
+                Toggle("Show Linux jobs", isOn: $showsJobs)
+                Toggle("Show Linux agents", isOn: $showsAgents)
+                Button("Check connection") {
+                    workbench()
+                    Task { await devices.diagnose() }
+                }
+                Divider()
+                ClipboardMenu(model: devices, sync: clipboardSync)
+            }
             if showsInput, let status = model.status {
-                let active = status.serverRunning
-                icon(active ? "pause.fill" : "play.fill", label: active ? "Pause input" : "Resume input") {
-                    Task { await model.setPaused(active) }
+                Button(status.serverRunning ? "Pause keyboard sharing" : "Resume keyboard sharing") {
+                    Task { await model.setPaused(status.serverRunning) }
                 }
                 .disabled(model.updating)
             }
-            if devices.selected != nil {
-                Menu {
-                    Toggle("Show Linux jobs", isOn: $showsJobs)
-                } label: {
-                    Image(systemName: "ellipsis.circle").font(.system(size: 14))
-                }
-                .menuIndicator(.hidden)
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .foregroundStyle(lilac)
-                .accessibilityLabel("Fox options")
-            }
-            icon("xmark", label: "Close status", action: close)
+            Divider()
+            Button("All controls…", action: workbench)
+            Button("Quit Handoff Fox") { NSApp.terminate(nil) }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(palette.textSecondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
-        .padding(9)
-        .background(lilac.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(targetingFile ? apricot : lilac.opacity(0.10)))
-        .dropDestination(for: URL.self) { items, _ in devices.acceptFileDrop(items) } isTargeted: { value in
-            targetingFile = value && devices.selected != nil && devices.running == nil
+        .menuIndicator(.hidden)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("More actions")
+        .help("More actions")
+    }
+
+    private var firstRun: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Pair the Linux computer you already reach over SSH. After that it is one click.")
+                .font(.system(size: 12))
+                .foregroundStyle(palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("user@host or SSH alias", text: $pairingAddress)
+                .textFieldStyle(.roundedBorder)
+                .focused($pairFocused)
+                .accessibilityLabel("SSH address")
+                .onSubmit(pair)
+                .onChange(of: pairingAddress) { _, _ in devices.clearPairingError() }
+            Button(pairing ? "Pairing…" : "Pair Linux") { pair() }
+                .buttonStyle(FoxPrimaryButtonStyle())
+                .disabled(pairing || !PeerClient.validAddress(trimmedPair))
+            if PeerClient.validAddress(trimmedPair) {
+                Button(devices.checkingPreflight ? "Checking…" : "Check this address first") {
+                    Task { await devices.preflightCheck(trimmedPair) }
+                }
+                .buttonStyle(FoxSecondaryButtonStyle(compact: true))
+                .disabled(devices.checkingPreflight)
+            }
+            if let check = devices.preflight, check.steps.contains(where: { $0.state != .ready }) {
+                FoxChecklist(steps: check.steps)
+                    .padding(.top, 1)
+            }
+            Text("Check it first: ssh \(trimmedPair.isEmpty ? "user@host" : trimmedPair) should sign in without a password.")
+                .font(.system(size: 10))
+                .foregroundStyle(palette.textTertiary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = devices.pairingError {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                if devices.needsHostVerification {
+                    Button("Copy the fingerprint command") {
+                        devices.copyHostVerificationCommand(for: trimmedPair)
+                    }
+                    .buttonStyle(FoxSecondaryButtonStyle(compact: true))
+                }
+            }
+        }
+        .padding(11)
+        .foxCard()
+        .onAppear { pairFocused = true }
+    }
+
+    private var recovery: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("\(devices.selectedName) is not answering. Wake it, or check that its SSH address still resolves.")
+                .font(.system(size: 11))
+                .foregroundStyle(palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Button("Try again") {
+                    guard let address = devices.selected else { return }
+                    Task { await devices.select(address) }
+                }
+                .buttonStyle(FoxPrimaryButtonStyle(compact: true))
+                Button("Check connection") {
+                    workbench()
+                    Task { await devices.diagnose() }
+                }
+                .buttonStyle(FoxSecondaryButtonStyle(compact: true))
+            }
+        }
+        .padding(10)
+        .foxCard(raised: false)
+    }
+
+    private var sendRow: some View {
+        HStack(spacing: 6) {
+            Button { devices.chooseFile() } label: {
+                Label("Send file…", systemImage: "arrow.up.doc")
+            }
+            .buttonStyle(FoxSecondaryButtonStyle())
+            .disabled(devices.running != nil || reachability.isUnreachable)
+            destinationMenu
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var destinationMenu: some View {
+        Menu {
+            ForEach(devices.volumes) { disk in
+                Button {
+                    devices.setSendVolume(disk.id)
+                } label: {
+                    if disk.id == devices.sendVolume {
+                        Label(disk.name, systemImage: "checkmark")
+                    } else {
+                        Text(disk.name)
+                    }
+                }
+            }
+            Divider()
+            Button("Send a link…") {
+                enteringLink = true
+                linkFocused = true
+            }
+            Button("Choose receive folder…") { devices.chooseReceiveFolder() }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "internaldrive")
+                Text(devices.volumeName(devices.sendVolume)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+            }
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(palette.textSecondary)
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .background(palette.sunken, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(palette.border))
+        }
+        .menuIndicator(.hidden)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Where this lands on Linux")
+        .accessibilityLabel("Destination, \(devices.volumeName(devices.sendVolume))")
+    }
+
+    private var linkRow: some View {
+        HStack(spacing: 6) {
+            TextField("https://…", text: $link)
+                .textFieldStyle(.roundedBorder)
+                .focused($linkFocused)
+                .accessibilityLabel("Link to open on Linux")
+                .onSubmit(sendLink)
+            Button("Open", action: sendLink)
+                .buttonStyle(FoxPrimaryButtonStyle(compact: true))
+                .disabled(FileHandoff.browserURL(link.trimmingCharacters(in: .whitespacesAndNewlines)) == nil)
+        }
+    }
+
+    @ViewBuilder private var lastProject: some View {
+        if let address = devices.selected, let project = devices.lastProjects[address] {
+            Button {
+                Task { await devices.open(project) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder").foregroundStyle(palette.textSecondary)
+                    Text("Open \(project.name)")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(palette.textPrimary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(palette.textTertiary)
+                }
+                .padding(9)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foxCard(radius: 10)
+            .disabled(devices.running != nil)
+        }
+    }
+
+    @ViewBuilder private var agentRow: some View {
+        if devices.agents.isEmpty {
+            Label("No agent sessions on Linux", systemImage: "terminal")
+                .font(.system(size: 11))
+                .foregroundStyle(palette.textTertiary)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(devices.agents.prefix(3)) { agent in
+                    HStack(spacing: 6) {
+                        Circle().fill(palette.success).frame(width: 5, height: 5)
+                        Text(agent.agent)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(palette.textPrimary)
+                        Text(agent.session)
+                            .font(.system(size: 10))
+                            .foregroundStyle(palette.textTertiary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                if devices.agents.count > 3 {
+                    Text("+\(devices.agents.count - 3) more")
+                        .font(.system(size: 10))
+                        .foregroundStyle(palette.textTertiary)
+                }
+            }
+            .padding(9)
+            .foxCard(raised: false, radius: 10)
         }
     }
 
@@ -443,103 +695,67 @@ struct LinkPanel: View {
                     Image(systemName: job.state.isActive ? "hourglass" :
                             job.state == .succeeded ? "checkmark.circle" :
                             job.state == .failed ? "exclamationmark.circle" : "minus.circle")
-                        .foregroundStyle(job.state == .failed ? apricot : mint)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(job.title).lineLimit(1).foregroundStyle(.white)
-                        Text(job.state.label).font(.caption).foregroundStyle(muted)
+                        .foregroundStyle(job.state == .failed ? palette.warning : palette.success)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(job.title).lineLimit(1).foregroundStyle(palette.textPrimary)
+                        Text(job.state.label).font(.system(size: 10)).foregroundStyle(palette.textTertiary)
                     }
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(lilac)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(palette.textTertiary)
                 }
+                .padding(9)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(9)
-            .background(lilac.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            .foxCard(raised: false, radius: 10)
             .help("Open this job in Handoff Fox")
         } else {
             Label(jobsReachable == nil ? "Checking Linux jobs…" :
                     jobsReachable == true ? "No recent Linux jobs" : "Linux job status unavailable",
                   systemImage: "terminal")
-                .foregroundStyle(muted)
+                .font(.system(size: 11))
+                .foregroundStyle(palette.textTertiary)
         }
     }
 
-    private var deviceDetails: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 4) {
-                if let free = model.activity?.workspaceFreeGiB {
-                    Button {
-                        Task { await model.open(.workspace) }
-                    } label: {
-                        Label("\(free) GiB free", systemImage: "internaldrive").monospacedDigit()
-                    }
-                    .buttonStyle(.plain)
-                    .help("Open Workspace on Linux")
-                    .accessibilityLabel("Open Workspace. \(free) GiB free.")
-                }
-                Spacer(minLength: 0)
-                Menu("Tools") {
-                    Button(model.activity?.hermesActive == true ? "Hermes · Running" : "Open Hermes") {
-                        Task { await model.open(.hermes) }
-                    }
-                    Button(model.activity?.herdrAgents.map { "Herdr · \($0) agents" } ?? "Open Herdr") {
-                        Task { await model.open(.herdr) }
-                    }
-                    if model.activity?.workspaceFreeGiB == nil {
-                        Button("Open Workspace") { Task { await model.open(.workspace) } }
-                    }
-                    Divider()
-                    Button("Refresh activity") { Task { await model.loadActivity() } }
-                        .disabled(model.activityLoading)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            }
-            if let info = model.activity, info.needsAttention {
-                Text(info.attentionSummary)
-                    .foregroundStyle(apricot)
-            }
-            if model.status?.connected == true {
-                HStack {
-                    Text("Return to Mac")
-                    Spacer()
-                    Text("⌃ ⌥ Esc").monospaced().foregroundStyle(lilac)
-                }
-                .accessibilityLabel("Return to Mac. Control Option Escape.")
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Button("All controls", action: workbench)
+                .buttonStyle(FoxSecondaryButtonStyle(compact: true))
+            Spacer(minLength: 0)
+            if devices.selected != nil, case .unreachable = reachability,
+               let seen = devices.lastSeen[devices.selected ?? ""] {
+                Text("Last seen \(seen.formatted(date: .omitted, time: .shortened))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(palette.textTertiary)
             }
         }
-        .foregroundStyle(muted)
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
-        .background(lilac.opacity(0.075), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(lilac.opacity(0.10)))
     }
 
-    private func primaryLabel(_ title: String, symbol: String) -> some View {
-        Label(title, systemImage: symbol)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ink)
-            .frame(maxWidth: .infinity, minHeight: 42)
-            .background(lilac, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func icon(_ name: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: name)
-                .font(.system(size: 10, weight: .semibold))
-                .frame(width: 23, height: 24).contentShape(Rectangle())
+    private func pair() {
+        guard PeerClient.validAddress(trimmedPair), !pairing else { return }
+        pairing = true
+        Task {
+            await devices.pair(trimmedPair)
+            pairing = false
+            if devices.pairingError == nil {
+                pairingAddress = ""
+                pairFocused = false
+            }
         }
-        .buttonStyle(.plain).foregroundStyle(lilac)
-        .help(label).accessibilityLabel(label)
     }
-}
 
-private struct CompactStatusLabel: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 5) {
-            configuration.icon.font(.system(size: 5)).accessibilityHidden(true)
-            configuration.title.font(.system(size: 11))
+    private func sendLink() {
+        let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard FileHandoff.browserURL(text) != nil else { return }
+        Task {
+            await devices.openLink(text)
+            if devices.error == nil {
+                link = ""
+                enteringLink = false
+            }
         }
     }
 }

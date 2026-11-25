@@ -173,58 +173,66 @@ final class RemoteDesktop: ObservableObject {
 struct OpenDesktopMenu: View {
     @ObservedObject var desktop: RemoteDesktop
     let address: String?
-    var accent: Color? = nil
+    @Environment(\.colorScheme) private var scheme
 
-    var body: some View {
-        Group {
-            if let address, let accent {
-                HStack(spacing: 2) {
-                    Button {
-                        Task { await desktop.showOrOpen(host: address) }
-                    } label: {
-                        Label(desktop.opening ? "Connecting…" : "Open Desktop", systemImage: "display")
-                            .font(.system(size: 13, weight: .semibold))
-                            .frame(maxWidth: .infinity, minHeight: 42)
-                            .contentShape(Rectangle())
-                            .foregroundStyle(Color(red: 0.11, green: 0.08, blue: 0.16))
-                            .background(accent)
-                    }
-                    .buttonStyle(.plain)
-                    Menu { choices } label: {
-                        Image(systemName: "chevron.down")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .accessibilityLabel("Desktop options")
-                    .help("Choose a display mode or reconnect")
-                    .frame(width: 42, height: 42)
-                    .background(accent.opacity(0.18))
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            } else {
-                Menu { choices } label: {
-                    Label(desktop.opening ? "Connecting…" : "Open Desktop", systemImage: "display")
-                }
-            }
-        }
-        .help("Release the viewer keyboard with Shift + Escape")
-        .disabled(address == nil || desktop.opening)
+    private var palette: FoxPalette { FoxPalette(scheme: scheme) }
+
+    private var modeName: String {
+        guard let address else { return "Mirror" }
+        return desktop.preferredMode(for: address) == .mirror ? "Mirror" : "Private"
     }
 
-    @ViewBuilder private var choices: some View {
+    var body: some View {
         if let address {
-            Button("Mirror screen · Fit to Window") { Task { await desktop.open(.mirror, host: address) } }
-            Button("Private screen · Fit to Window") { Task { await desktop.open(.privateScreen, host: address) } }
-            Menu("Actual Size") {
-                Button("Mirror screen") { Task { await desktop.open(.mirror, host: address, actualSize: true) } }
-                Button("Private screen") { Task { await desktop.open(.privateScreen, host: address, actualSize: true) } }
+            HStack(spacing: 2) {
+                Button {
+                    Task { await desktop.showOrOpen(host: address) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "display")
+                        Text(desktop.opening ? "Connecting…" : "Open Desktop")
+                        Text("· \(modeName)")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(palette.onAccent.opacity(0.7))
+                        Spacer(minLength: 0)
+                    }
+                }
+                .buttonStyle(FoxPrimaryButtonStyle())
+                Menu {
+                    choices(for: address)
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(palette.onAccent)
+                        .frame(width: 32, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .menuIndicator(.hidden)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .background(palette.accent.opacity(0.7),
+                            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .accessibilityLabel("Desktop options")
+                .help("Choose a display mode or reconnect")
             }
-            if desktop.activeHost == address {
-                Divider()
-                Button("Reconnect") { Task { await desktop.reconnect() } }
-                Button("Disconnect") { desktop.disconnect() }
-            }
-            Text("Shift + Esc releases the keyboard")
+            .disabled(desktop.opening)
         }
+    }
+
+    @ViewBuilder
+    private func choices(for address: String) -> some View {
+        Button("Mirror screen · Fit to Window") { Task { await desktop.open(.mirror, host: address) } }
+        Button("Private screen · Fit to Window") { Task { await desktop.open(.privateScreen, host: address) } }
+        Menu("Actual Size") {
+            Button("Mirror screen") { Task { await desktop.open(.mirror, host: address, actualSize: true) } }
+            Button("Private screen") { Task { await desktop.open(.privateScreen, host: address, actualSize: true) } }
+        }
+        if desktop.activeHost == address {
+            Divider()
+            Button("Reconnect") { Task { await desktop.reconnect() } }
+            Button("Disconnect") { desktop.disconnect() }
+        }
+        Divider()
+        Text("Shift + Esc releases the viewer keyboard")
     }
 }

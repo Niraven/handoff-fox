@@ -1191,6 +1191,40 @@ def desktop_status():
     return "needsHyprland"
 
 
+AGENT_COMMANDS = {
+    "claude": "Claude", "codex": "Codex", "cursor-agent": "Cursor",
+    "aider": "Aider", "goose": "Goose", "opencode": "OpenCode", "copilot": "Copilot",
+}
+MAX_AGENTS = 20
+
+
+def agent_sessions():
+    # Read-only: which panes are running a known coding agent. Names only, no
+    # command lines and no file paths, because this answer crosses the wire.
+    if not shutil.which("tmux"):
+        return []
+    listing = subprocess.run(
+        ["tmux", "list-panes", "-a", "-F",
+         "#{session_name}\t#{window_index}.#{pane_index}\t#{pane_current_command}\t#{pane_title}"],
+        capture_output=True, text=True, timeout=3, check=False)
+    if listing.returncode:
+        return []
+    found = []
+    for line in listing.stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 4:
+            continue
+        session, pane, command, title = fields
+        haystack = f"{command} {title}".lower()
+        agent = next((name for key, name in AGENT_COMMANDS.items() if key in haystack), None)
+        if agent is None:
+            continue
+        found.append({"agent": agent, "session": session, "pane": pane})
+        if len(found) >= MAX_AGENTS:
+            break
+    return found
+
+
 def request(payload):
     if payload.get("version") != VERSION:
         raise RequestError("Update the Mac and Linux components to the same protocol version.")
@@ -1243,6 +1277,8 @@ def request(payload):
         return {}
     if action == "reject":
         return reject_handoff(ticket_id(payload.get("project")))
+    if action == "agents":
+        return {"agents": agent_sessions()}
     if action == "mac-file-status":
         return {"transferStatus": mac_file_status(ticket_id(payload.get("project")))}
     if action == "save":

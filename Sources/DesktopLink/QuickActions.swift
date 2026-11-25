@@ -12,6 +12,9 @@ struct QuickActions: View {
     @State private var targetingFile = false
     @State private var reaction = 0
     @FocusState private var linkFocused: Bool
+    @Environment(\.colorScheme) private var scheme
+
+    private var palette: FoxPalette { FoxPalette(scheme: scheme) }
 
     private var desktopPeer: String? {
         if let last = desktop.lastHost, model.peers.contains(where: { $0.address == last }) { return last }
@@ -19,87 +22,53 @@ struct QuickActions: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                FoxCompanion(attentive: targetingFile, reaction: reaction)
-                VStack(alignment: .leading, spacing: 2) {
-                    if let target = model.selected {
-                        Text(model.deviceName(target)).font(.headline)
-                    } else {
-                        Text("Pair a Linux device").font(.headline)
-                    }
-                    if targetingFile, let target = model.selected {
-                        Text("Drop to send to \(model.deviceName(target))")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
-                Spacer()
-                Button(model.selected == nil ? "Pair…" : "All controls", action: workbench)
-            }
-            .contentShape(Rectangle())
-            .dropDestination(for: URL.self) { items, _ in model.acceptFileDrop(items) } isTargeted: { value in
-                targetingFile = value && model.selected != nil && model.running == nil
-            }
-            if let target = model.selected {
+        VStack(alignment: .leading, spacing: 9) {
+            header
+            if model.selected != nil {
                 if let desktopPeer {
                     Button {
                         close()
                         Task { await desktop.showOrOpen(host: desktopPeer) }
                     } label: {
-                        Label("Resume Desktop on \(model.deviceName(desktopPeer))", systemImage: "display")
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        HStack(spacing: 6) {
+                            Image(systemName: "display")
+                            Text("Resume Desktop")
+                            Text("· \(model.deviceName(desktopPeer))")
+                                .foregroundStyle(palette.onAccent.opacity(0.7))
+                            Spacer(minLength: 0)
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(red: 0.47, green: 0.29, blue: 0.69))
+                    .buttonStyle(FoxPrimaryButtonStyle())
                     .disabled(desktop.opening)
                 }
-                HStack {
-                    Button("Send file…") { model.chooseFile() }
-                    Button("Send link…") { enteringLink = true; linkFocused = true }
-                    Menu {
-                        Button("Send screenshot…") { model.chooseFile(imagesOnly: true) }
-                    } label: {
-                        Image(systemName: "ellipsis.circle").accessibilityLabel("More send options")
-                    }
-                    .fixedSize()
-                }
-                .disabled(model.running != nil)
                 if enteringLink {
-                    HStack {
-                        TextField("https://…", text: $link)
-                            .accessibilityLabel("Link to open on Linux")
-                            .focused($linkFocused)
-                            .onSubmit { sendLink(to: target) }
-                        Button("Send") { sendLink(to: target) }
-                            .disabled(model.running != nil || FileHandoff.browserURL(cleanLink) == nil)
-                    }
-                }
-                if let project = model.lastProjects[target] {
-                    Button {
-                        Task { await model.open(project, on: target) }
-                    } label: {
-                        Label(project.name, systemImage: "folder")
-                            .lineLimit(1)
-                    }
-                    .accessibilityLabel("Open last project, \(project.name) on \(model.deviceName(target))")
-                    .help("Open the last project on \(model.deviceName(target))")
-                    .disabled(model.running != nil)
+                    linkRow
                 } else {
-                    Button("Choose a saved project…", action: workbench).buttonStyle(.link)
+                    sendRow
                 }
-                FoxTransferFeedback(inbox: inbox, address: target, device: model.selectedName,
+                lastProject
+                FoxTransferFeedback(inbox: inbox, address: model.selected, device: model.selectedName,
                                     busy: model.running != nil)
+            } else {
+                Button("Pair a Linux computer…", action: workbench)
+                    .buttonStyle(FoxPrimaryButtonStyle())
             }
-            if let detail = model.error ?? desktop.message ?? model.notice {
-                Text(detail).font(.caption).foregroundStyle(model.error != nil || desktop.message != nil ? Color.orange : .secondary)
+            if let detail = model.error ?? desktop.message {
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(model.error != nil ? palette.danger : palette.warning)
                     .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(16)
-        .frame(width: 350, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(12)
+        .frame(width: 332, alignment: .leading)
         .onExitCommand(perform: close)
-        .onDisappear { targetingFile = false }
+        .onDisappear {
+            targetingFile = false
+            enteringLink = false
+            link = ""
+        }
         .onReceive(inbox.fileDeliveries) { file in
             if inbox.latestOutgoingFile(to: model.selected)?.id == file.id { reaction += 1 }
         }
@@ -108,14 +77,126 @@ struct QuickActions: View {
         }
     }
 
+    private var header: some View {
+        HStack(spacing: 9) {
+            FoxCompanion(attentive: targetingFile, reaction: reaction)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.selected.map { model.deviceName($0) } ?? "Pair a Linux device")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                if let target = model.selected {
+                    FoxStatusLine(reachability: model.reachability(for: target), compact: true)
+                }
+                if targetingFile, let target = model.selected {
+                    Text("Drop to send to \(model.deviceName(target))")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(palette.accent)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            Button(model.selected == nil ? "Pair…" : "All controls", action: workbench)
+                .buttonStyle(FoxSecondaryButtonStyle(compact: true))
+        }
+        .contentShape(Rectangle())
+        .dropDestination(for: URL.self) { items, _ in model.acceptFileDrop(items) } isTargeted: { value in
+            targetingFile = value && model.selected != nil && model.running == nil
+        }
+    }
+
+    private var sendRow: some View {
+        HStack(spacing: 6) {
+            Button("Send file…") { model.chooseFile() }
+                .buttonStyle(FoxSecondaryButtonStyle())
+                .disabled(model.running != nil)
+            Button("Send link…") {
+                enteringLink = true
+                linkFocused = true
+            }
+            .buttonStyle(FoxSecondaryButtonStyle())
+            .disabled(model.running != nil)
+            Spacer(minLength: 0)
+            Menu {
+                Button("Send screenshot…") { model.chooseFile(imagesOnly: true) }
+                Button("Choose receive folder…") { model.chooseReceiveFolder() }
+                Divider()
+                if let target = model.selected {
+                    Toggle("Receive handoffs from \(model.selectedName)", isOn: Binding(
+                        get: { model.receivingPeer == target },
+                        set: { model.enableReceiving(from: $0 ? target : nil) }
+                    ))
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(palette.textSecondary)
+                    .frame(width: 28, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .menuIndicator(.hidden)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("More send options")
+        }
+    }
+
+    private var linkRow: some View {
+        HStack(spacing: 6) {
+            TextField("https://…", text: $link)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Link to open on Linux")
+                .focused($linkFocused)
+                .onSubmit(sendLink)
+            Button("Open", action: sendLink)
+                .buttonStyle(FoxPrimaryButtonStyle(compact: true))
+                .disabled(model.running != nil || FileHandoff.browserURL(cleanLink) == nil)
+            Button {
+                enteringLink = false
+                link = ""
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .buttonStyle(FoxIconButtonStyle())
+            .accessibilityLabel("Cancel link")
+        }
+    }
+
+    @ViewBuilder private var lastProject: some View {
+        if let target = model.selected, let project = model.lastProjects[target] {
+            Button {
+                Task { await model.open(project, on: target) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder").foregroundStyle(palette.textSecondary)
+                    Text("Open \(project.name)")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(palette.textPrimary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(palette.textTertiary)
+                }
+                .padding(8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foxCard(radius: 9)
+            .disabled(model.running != nil)
+            .accessibilityLabel("Open last project, \(project.name) on \(model.deviceName(target))")
+        }
+    }
+
     private var cleanLink: String { link.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    private func sendLink(to target: String) {
+    private func sendLink() {
         guard FileHandoff.browserURL(cleanLink) != nil else { return }
         let address = cleanLink
         Task {
             guard model.running == nil else { return }
-            await model.openLink(address, to: target)
+            await model.openLink(address)
             if model.error == nil {
                 link = ""
                 enteringLink = false

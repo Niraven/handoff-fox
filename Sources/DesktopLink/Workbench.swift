@@ -24,6 +24,14 @@ final class WorkbenchModel: ObservableObject {
     @Published private(set) var jobs: [LinuxJob] = []
     @Published private(set) var jobDetail: PeerReply?
     @Published private(set) var supportsJobs = false
+    @Published private(set) var reachability: [String: PeerReachability] = [:]
+    @Published private(set) var lastSeen: [String: Date] = [:]
+    @Published private(set) var agents: [LinuxAgentSession] = []
+    @Published private(set) var agentsUnavailable = false
+    @Published private(set) var preflight: ConnectionCheck?
+    @Published private(set) var checkingPreflight = false
+    private var lastJobRefresh = Date.distantPast
+    private var lastAgentProbe = Date.distantPast
     private var transferProtocols: [String: Bool]
     private var loadedPeer: String?
     private var checkingJobs = false
@@ -67,6 +75,13 @@ final class WorkbenchModel: ObservableObject {
             jobDetail = nil
             supportsJobs = false
             jobRevision += 1
+            notice = nil
+            error = nil
+            clipboardFeedback = nil
+            preflight = nil
+            agents = []
+            agentsUnavailable = false
+            clearPairingError()
         }
         selected = address
         UserDefaults.standard.set(address, forKey: "selectedLinuxPeer")
@@ -110,6 +125,7 @@ final class WorkbenchModel: ObservableObject {
         jobs = []
         jobDetail = nil
         supportsJobs = info.jobProtocol == 1
+        agentsUnavailable = false
         rememberTransferProtocol(info, for: address)
         loadedPeer = address
         jobRevision += 1
@@ -119,6 +135,7 @@ final class WorkbenchModel: ObservableObject {
         }
         UserDefaults.standard.set(address, forKey: "selectedLinuxPeer")
         if receiveHandoffs { enableReceiving(from: address) }
+        noteReachable(address)
         notice = "Paired with \(peer.name)."
     }
 
@@ -134,7 +151,59 @@ final class WorkbenchModel: ObservableObject {
         connectionCheck = nil
         defer { checkingConnection = false }
         let check = await Task.detached(priority: .utility) { PeerClient.checkConnection(address) }.value
-        if selected == address { connectionCheck = check }
+        if selected == address {
+            connectionCheck = check
+            if let failing = check.steps.first(where: { $0.state == .actionNeeded }) {
+                reachability[address] = .unreachable(String(failing.detail.prefix(52)))
+            } else {
+                noteReachable(address)
+            }
+        }
+    }
+
+    /// Reports which stage a new address fails at before anything is installed,
+    /// so pairing a machine that is not ready is a diagnosis rather than an error.
+    func preflightCheck(_ address: String) async {
+        guard PeerClient.validAddress(address), !checkingPreflight else { return }
+        checkingPreflight = true
+        preflight = nil
+        defer { checkingPreflight = false }
+        let check = await Task.detached(priority: .utility) { PeerClient.checkConnection(address) }.value
+        preflight = check
+        if let failing = check.steps.first(where: { $0.state == .actionNeeded }) {
+            reachability[address] = .unreachable(String(failing.detail.prefix(52)))
+        } else if check.steps.allSatisfy({ $0.state == .ready || $0.state == .unchecked }) {
+            noteReachable(address)
+        }
+    }
+
+    /// Read-only: which known coding agents are running on the Linux side.
+    /// A receiver that predates the probe answers "unknown action", and the row
+    /// stays hidden rather than reporting zero.
+    func loadAgents() async {
+        guard let address = selected, !agentsUnavailable else { return }
+        if Date().timeIntervalSince(lastAgentProbe) < 5 { return }
+        lastAgentProbe = Date()
+        do {
+            let reply = try await Task.detached(priority: .utility) {
+                try PeerClient.request(PeerRequest(action: "agents"), on: address)
+            }.value
+            if selected == address { agents = reply.agents ?? [] }
+        } catch let failure as PeerClient.Failure where failure.reason.contains("Unknown Handoff Fox action") {
+            agentsUnavailable = true
+            agents = []
+        } catch {
+            agents = []
+        }
+    }
+
+    /// Opens the authenticated session when the panel is shown, so the first
+    /// action does not pay for the handshake the user is waiting on.
+    func prewarm() async {
+        guard let address = selected, running == nil else { return }
+        _ = try? await Task.detached(priority: .utility) {
+            try PeerClient.request(PeerRequest(action: "pair"), on: address)
+        }.value
     }
 
     func clearPairingError() {
@@ -203,6 +272,15 @@ final class WorkbenchModel: ObservableObject {
         guard let selected else { return "home" }
         let preferred = inbox.preferredVolume(for: selected)
         return volumes.contains(where: { $0.id == preferred }) ? preferred : "home"
+    }
+
+    func setSendVolume(_ volume: String) {
+        guard let selected else { return }
+        inbox.setPreferredVolume(volume, for: selected)
+    }
+
+    func volumeName(_ id: String) -> String {
+        volumes.first(where: { $0.id == id })?.name ?? (id == "workspace" ? "Workspace" : "Home")
     }
 
     func chooseFile(imagesOnly: Bool = false) {
@@ -287,6 +365,7 @@ final class WorkbenchModel: ObservableObject {
     @discardableResult
     func refreshJobs() async -> Bool {
         guard supportsJobs, !checkingJobs, let address = selected else { return false }
+        if Date().timeIntervalSince(lastJobRefresh) < 1 { return !jobs.isEmpty }
         checkingJobs = true
         let revision = jobRevision
         defer { checkingJobs = false }
@@ -294,6 +373,7 @@ final class WorkbenchModel: ObservableObject {
             try PeerClient.request(PeerRequest(action: "job-list"), on: address)
         }.value
         guard !Task.isCancelled, selected == address, revision == jobRevision, let list = reply?.jobs else { return false }
+        lastJobRefresh = Date()
         jobs = list
         return true
     }
@@ -344,6 +424,7 @@ final class WorkbenchModel: ObservableObject {
         running = label
         error = nil
         notice = nil
+        noteChecking(target)
         if request.action == "build" || request.action == "scrape" { result = nil }
         defer { running = nil }
         do {
@@ -360,11 +441,66 @@ final class WorkbenchModel: ObservableObject {
             }
             if ["build", "scrape"].contains(request.action), reply.output != nil { result = reply }
             if request.action == "save" { notice = "Project saved on Linux." }
+            noteReachable(target)
             return reply
         } catch {
             self.error = error.localizedDescription
+            noteUnreachable(target, error: error)
             return nil
         }
+    }
+
+    func reachability(for address: String?) -> PeerReachability {
+        guard let address else { return .unknown }
+        return reachability[address] ?? .unknown
+    }
+
+    private func noteChecking(_ address: String) {
+        if reachability[address] == nil { reachability[address] = .checking }
+    }
+
+    private func noteReachable(_ address: String) {
+        reachability[address] = .reachable
+        lastSeen[address] = Date()
+    }
+
+    private func noteUnreachable(_ address: String, error: Error) {
+        let reason: String
+        if let failure = error as? PeerClient.Failure {
+            switch failure.kind {
+            case .timeout: reason = "Linux didn’t answer"
+            case .unreachable: reason = "Not reachable"
+            case .untrustedHost, .changedHost: reason = "Host key needs checking"
+            case .authentication: reason = "SSH key rejected"
+            case .missingReceiver: reason = "Receiver missing"
+            case .receiverError, .other: reason = "Linux returned an error"
+            }
+        } else {
+            reason = error.localizedDescription
+        }
+        reachability[address] = .unreachable(reason)
+    }
+
+    func cancel(_ job: LinuxJob) async {
+        guard let address = selected, supportsJobs else { return }
+        do {
+            let reply = try await Task.detached(priority: .userInitiated) {
+                try PeerClient.request(PeerRequest(action: "job-cancel", job: job.id), on: address)
+            }.value
+            jobDetail = reply
+            if let updated = reply.job { updateJob(updated) }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func copyHostVerificationCommand(for target: String) {
+        guard PeerClient.validAddress(target) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(
+            "ssh -o StrictHostKeyChecking=ask -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes -- '\(target)' true",
+            forType: .string
+        )
     }
 }
 
@@ -415,6 +551,20 @@ struct Workbench: View {
     @State private var showConnection = false
     @State private var receiveWhenPaired = false
     @State private var link = ""
+    @FocusState private var addressFocused: Bool
+    @Environment(\.colorScheme) private var scheme
+
+    private var palette: FoxPalette { FoxPalette(scheme: scheme) }
+
+    private var statusMessage: (text: String, symbol: String, tone: Color)? {
+        if let error = model.error { return (error, "exclamationmark.circle", palette.danger) }
+        if let error = model.pairingError { return (error, "person.badge.key", palette.danger) }
+        if let message = desktop.message { return (message, "display.trianglebadge.exclamationmark", palette.warning) }
+        if let clipboard = model.clipboardFeedback { return (clipboard, "clipboard", palette.textSecondary) }
+        if let receipt = inbox.lastReceived { return (receipt, "arrow.down.left", palette.textSecondary) }
+        if let notice = model.notice { return (notice, "checkmark.circle", palette.textSecondary) }
+        return nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -430,21 +580,11 @@ struct Workbench: View {
                         }
                         .foregroundStyle(.secondary)
                     }
-                    if let error = desktop.message {
-                        Label(error, systemImage: "display.trianglebadge.exclamationmark")
-                            .foregroundStyle(.orange)
-                    }
-                    if let clipboard = model.clipboardFeedback {
-                        Label(clipboard, systemImage: "clipboard").foregroundStyle(.secondary)
-                    }
-                    if let error = model.error {
-                        Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.orange)
-                    }
-                    if let receipt = inbox.lastReceived {
-                        Label(receipt, systemImage: "arrow.down.left").foregroundStyle(.secondary)
-                    }
-                    if let notice = model.notice {
-                        Label(notice, systemImage: "checkmark.circle").foregroundStyle(.secondary)
+                    if let status = statusMessage {
+                        Label(status.text, systemImage: status.symbol)
+                            .font(.callout)
+                            .foregroundStyle(status.tone)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if model.selected != nil {
                         desktopCard
@@ -499,32 +639,48 @@ struct Workbench: View {
 
     private var pairForm: some View {
         let target = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        return VStack(alignment: .leading, spacing: 7) {
+        return VStack(alignment: .leading, spacing: 8) {
             Text("Pair a Linux computer").font(.subheadline.weight(.semibold))
+            Text(model.peers.isEmpty
+                 ? "Your SSH key has to reach the account first. Then pair once and the fox opens it in a click."
+                 : "Add another Linux computer you reach over SSH.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 TextField("SSH alias or user@hostname", text: $address)
                     .accessibilityLabel("SSH address")
+                    .focused($addressFocused)
                     .onSubmit { pair(target) }
                     .onChange(of: address) { _, _ in model.clearPairingError() }
                 Button("Pair") { pair(target) }
                     .buttonStyle(.borderedProminent)
                     .disabled(!PeerClient.validAddress(target))
             }
-            Text("Use a Linux account you can reach with an SSH key. Pair adds the receiver to that account if it’s missing.")
-                .font(.caption).foregroundStyle(.secondary)
+            if PeerClient.validAddress(target) {
+                Text("Check it first: ssh \(target) should sign in without asking for a password.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            if PeerClient.validAddress(target) {
+                Button(model.checkingPreflight ? "Checking…" : "Check this address first") {
+                    Task { await model.preflightCheck(target) }
+                }
+                .controlSize(.small)
+                .disabled(model.checkingPreflight)
+            }
+            if let check = model.preflight, check.steps.contains(where: { $0.state != .ready }) {
+                FoxChecklist(steps: check.steps, compact: false)
+            }
             Toggle("Receive handoffs from this device on this Mac", isOn: $receiveWhenPaired)
                 .font(.callout)
-            if let error = model.pairingError {
-                Label(error, systemImage: "exclamationmark.circle")
-                    .font(.callout).foregroundStyle(.orange)
-            }
             if model.needsHostVerification, PeerClient.validAddress(target) {
-                Text("In Terminal, compare the fingerprint SSH shows with the host key on Linux before approving it.")
+                Text("Compare the fingerprint SSH shows with the host key on Linux before approving it.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("Copy verification command") { copyVerificationCommand(for: target) }
+                Button("Copy verification command") { model.copyHostVerificationCommand(for: target) }
             }
         }
         .disabled(model.running != nil)
+        .onAppear { addressFocused = true }
     }
 
     private func pair(_ target: String) {
@@ -595,10 +751,10 @@ struct Workbench: View {
     private var desktopCard: some View {
         HStack(spacing: 12) {
             Image(systemName: "display")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(Color(red: 0.67, green: 0.50, blue: 0.94))
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(palette.accent)
                 .frame(width: 40, height: 40)
-                .background(.purple.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                .background(palette.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text("Remote desktop").font(.subheadline.weight(.semibold))
@@ -615,9 +771,8 @@ struct Workbench: View {
                 .disabled(model.checkingConnection)
             }
         }
-        .padding(15)
-        .background(.purple.opacity(0.075), in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.purple.opacity(0.18)))
+        .padding(14)
+        .foxCard()
     }
 
     private var connectionDetails: some View {
@@ -627,7 +782,7 @@ struct Workbench: View {
                     checkRow(step.name, detail: step.detail, status: step.state)
                 }
                 if report.offersHostVerification, let selected = model.selected {
-                    Button("Copy verification command") { copyVerificationCommand(for: selected) }
+                    Button("Copy verification command") { model.copyHostVerificationCommand(for: selected) }
                 }
             } else if model.checkingConnection {
                 ProgressView().controlSize(.small).accessibilityLabel("Checking the connection")
@@ -635,7 +790,8 @@ struct Workbench: View {
             if let selected = model.selected {
                 let inputReady = input.inputPeerAddress == selected && input.status?.connected == true
                 checkRow("Shared keyboard and mouse",
-                         detail: inputReady ? "Input link connected" : "Check the Deskflow and Waynergy pairing for this device",
+                         detail: inputReady ? "Connected · Control Option Esc returns to this Mac"
+                                            : "Check the Deskflow and Waynergy pairing for this device",
                          status: inputReady ? .ready : .unchecked)
                 checkRow("Automatic clipboard",
                          detail: clipboardSync.address == selected && clipboardSync.ready ? "Connected" : "Turn on sharing for this device in Clipboard",
@@ -644,11 +800,18 @@ struct Workbench: View {
                     get: { model.receivingPeer == selected },
                     set: { model.enableReceiving(from: $0 ? selected : nil) }
                 ))
+                HStack(spacing: 6) {
+                    ForEach([Shortcut.hermes, Shortcut.herdr, Shortcut.workspace], id: \.rawValue) { target in
+                        Button(target.rawValue.capitalized) { Task { await input.open(target) } }
+                            .disabled(input.inputPeerAddress == nil)
+                    }
+                }
+                .controlSize(.small)
             }
         }
         .font(.caption)
         .padding(12)
-        .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 9))
+        .foxCard(raised: false, radius: 9)
     }
 
     private func checkRow(_ title: String, detail: String, status: ConnectionCheck.State) -> some View {
@@ -660,15 +823,6 @@ struct Workbench: View {
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
-    }
-
-    private func copyVerificationCommand(for target: String) {
-        guard PeerClient.validAddress(target) else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(
-            "ssh -o StrictHostKeyChecking=ask -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes -- '\(target)' true",
-            forType: .string
-        )
     }
 
     @ViewBuilder private var desktopSetup: some View {
@@ -685,7 +839,8 @@ struct Workbench: View {
             Label("Sign in to Hyprland on Linux to share its desktop.", systemImage: "display")
                 .font(.caption).foregroundStyle(.secondary)
         case nil:
-            EmptyView()
+            Label("Not checked yet · Check connection", systemImage: "circle.dashed")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -731,8 +886,8 @@ struct Workbench: View {
                         Button("Build") { Task { await model.build(project) } }
                     }
                 }
-                .padding(7)
-                .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 6))
+                .padding(8)
+                .foxCard(radius: 8)
             }
         }
         .disabled(model.running != nil)
@@ -744,7 +899,7 @@ struct Workbench: View {
             HStack {
                 TextField("https://example.com/", text: $url).accessibilityLabel("Public HTTPS page")
                 Button("Run scrape") { Task { await model.scrape(url.trimmingCharacters(in: .whitespaces)) } }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     .disabled(URL(string: url.trimmingCharacters(in: .whitespaces))?.scheme != "https")
             }
         }
@@ -783,7 +938,7 @@ struct Workbench: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(9)
             }
             .frame(maxHeight: 175)
-            .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 6))
+            .foxCard(raised: false, radius: 8)
         }
     }
 

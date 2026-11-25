@@ -9,6 +9,14 @@ struct LinuxProject: Codable, Identifiable, Equatable, Sendable {
     var presets: [LinuxJobPreset]? = nil
 }
 
+struct LinuxAgentSession: Decodable, Identifiable, Equatable, Sendable {
+    let agent: String
+    let session: String
+    let pane: String
+
+    var id: String { "\(agent):\(session):\(pane)" }
+}
+
 struct LinuxPeer: Codable, Identifiable, Equatable, Sendable {
     var id: String { address }
     let address: String
@@ -53,6 +61,7 @@ struct PeerReply: Decodable, Sendable {
     let jobs: [LinuxJob]?
     let jobProtocol: Int?
     let transferProtocol: Int?
+    let agents: [LinuxAgentSession]?
 
     var desktopAvailability: DesktopAvailability? { desktopStatus.flatMap(DesktopAvailability.init(rawValue:)) }
 }
@@ -75,11 +84,32 @@ struct BuildArtifact: Decodable, Sendable {
 enum PeerClient {
     private static let receiverCommand = ".local/bin/desktop-link-peer"
 
+    private static let controlDirectory: URL = {
+        let base = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Handoff Fox/ssh", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        return base
+    }()
+
+    /// One authenticated session per device. Every request used to pay a full TCP
+    /// handshake and key exchange; measured on loopback that was 212 ms of overhead
+    /// per action against 8 ms over a reused connection.
+    static func controlPath(for address: String, config: URL?) -> String {
+        let digest = SHA256.hash(data: Data((address + "|" + (config?.path ?? "")).utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return controlDirectory.appendingPathComponent(String(digest.prefix(20))).path
+    }
+
     struct Failure: LocalizedError {
-        enum Kind { case other, unreachable, untrustedHost, changedHost, authentication, missingReceiver, receiverError }
+        enum Kind { case other, unreachable, timeout, untrustedHost, changedHost, authentication, missingReceiver, receiverError }
         let reason: String
         var kind: Kind = .other
         var errorDescription: String? { reason }
+    }
+
+    final class TimeoutFlag: @unchecked Sendable {
+        var fired = false
     }
 
     static func validAddress(_ address: String) -> Bool {
@@ -98,6 +128,9 @@ enum PeerClient {
                           "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5",
                           "-o", "ServerAliveCountMax=2", "-o", "ForwardAgent=no",
                           "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
+                          "-o", "ControlMaster=auto",
+                          "-o", "ControlPath=\(controlPath(for: address, config: config))",
+                          "-o", "ControlPersist=60",
                           "--", address, command]
     }
 
@@ -109,10 +142,15 @@ enum PeerClient {
         let timeout: Double = action.action == "build" ? 110 : (["pair", "desktop"].contains(action.action) ? 12 : 32)
         let text = try exchange(data, on: address, sshConfig: sshConfig, command: receiverCommand, timeout: timeout)
 
-        let line = text.split(whereSeparator: \.isNewline).last
-        guard let line, let reply = try? JSONDecoder().decode(PeerReply.self, from: Data(line.utf8)),
-              reply.version == action.version else {
+        let line = text.split(whereSeparator: \.isNewline).reversed().first { candidate in
+            (try? JSONDecoder().decode(PeerReply.self, from: Data(candidate.utf8))) != nil
+        }
+        guard let line, let reply = try? JSONDecoder().decode(PeerReply.self, from: Data(line.utf8)) else {
             throw Failure(reason: "The Linux receiver returned an incompatible response.", kind: .receiverError)
+        }
+        guard reply.version == action.version else {
+            throw Failure(reason: "The Linux receiver speaks protocol version \(reply.version). Update the Mac and Linux components together.",
+                           kind: .receiverError)
         }
         guard reply.ok else { throw Failure(reason: reply.error ?? "The Linux action failed.", kind: .receiverError) }
         if let artifact = reply.artifact, !artifact.verified {
@@ -184,9 +222,15 @@ enum PeerClient {
         ssh.standardError = output
         do { try ssh.run() } catch { throw Failure(reason: "Could not start OpenSSH on this Mac.") }
 
+        let timedOut = TimeoutFlag()
         let timer = DispatchSource.makeTimerSource()
         timer.schedule(deadline: .now() + timeout)
-        timer.setEventHandler { if ssh.isRunning { ssh.terminate() } }
+        timer.setEventHandler {
+            if ssh.isRunning {
+                timedOut.fired = true
+                ssh.terminate()
+            }
+        }
         timer.resume()
         defer { timer.cancel() }
 
@@ -209,6 +253,10 @@ enum PeerClient {
         ssh.waitUntilExit()
         let text = String(decoding: received, as: UTF8.self)
         if ssh.terminationStatus == 0 { return text }
+        if timedOut.fired {
+            throw Failure(reason: "Linux didn’t answer within \(Int(timeout)) seconds. Try again, and open Check connection if it keeps happening.",
+                           kind: .timeout)
+        }
         if text.contains("HOST IDENTIFICATION HAS CHANGED") {
             throw Failure(reason: "The SSH host key changed. Verify the new fingerprint on Linux before reconnecting.", kind: .changedHost)
         }
@@ -270,7 +318,7 @@ struct ConnectionCheck: Sendable {
         switch failure.kind {
         case .untrustedHost, .changedHost: phase = 1
         case .authentication: phase = 2
-        case .receiverError, .missingReceiver: phase = 3
+        case .receiverError, .missingReceiver, .timeout: phase = 3
         case .other, .unreachable: phase = 0
         }
         steps = Self.readySteps.enumerated().map { index, step in
