@@ -223,11 +223,6 @@ enum PeerReachability: Equatable {
         }
     }
 
-    var isReachable: Bool {
-        if case .reachable = self { return true }
-        return false
-    }
-
     var isUnreachable: Bool {
         if case .unreachable = self { return true }
         return false
