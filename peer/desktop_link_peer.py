@@ -38,6 +38,8 @@ MAX_FILE = 128 * 1024 * 1024
 OUTBOX = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "desktop-link/outbox"
 JOBS = OUTBOX.parent / "jobs"
 JOB_TIMEOUT = 900
+QUEUE_TTL = 7 * 24 * 60 * 60
+ORPHAN_TTL = 24 * 60 * 60
 ACTIVE_JOB_STATES = {"queued", "running", "cancelling"}
 
 
@@ -45,10 +47,26 @@ class RequestError(Exception):
     pass
 
 
+class ConfigError(RequestError):
+    pass
+
+
 def projects():
     if not CONFIG.exists():
         return []
-    return json.loads(CONFIG.read_text())["projects"]
+    try:
+        document = json.loads(CONFIG.read_text())
+    except ValueError as error:
+        raise ConfigError(f"Fix the project list at {CONFIG}; it is not valid JSON.") from error
+    entries = document.get("projects") if isinstance(document, dict) else None
+    if not isinstance(entries, list):
+        raise ConfigError(f"Add a projects list to {CONFIG}.")
+    return [entry for entry in entries if valid_project(entry)]
+
+
+def valid_project(entry):
+    return (isinstance(entry, dict)
+            and all(isinstance(entry.get(field), str) and entry[field] for field in ("id", "name", "path")))
 
 
 def display(project):
@@ -164,41 +182,76 @@ def ticket_id(token):
     return token
 
 
+def sweep_outbox():
+    now = time.time()
+    for manifest in OUTBOX.glob("*.json"):
+        if now - manifest.stat().st_mtime > QUEUE_TTL:
+            manifest.unlink(missing_ok=True)
+            (OUTBOX / f"{manifest.stem}.bin").unlink(missing_ok=True)
+    for stray in (*OUTBOX.glob("*.part"), *OUTBOX.glob("*.bin")):
+        # Nothing refers to a payload or a half-written manifest until its
+        # manifest is renamed into place, so neither holds a queue slot.
+        token = stray.name.partition(".")[0]
+        if (now - stray.stat().st_mtime > ORPHAN_TTL
+                and not (OUTBOX / f"{token}.json").is_file()):
+            stray.unlink(missing_ok=True)
+
+
 def mailbox():
     OUTBOX.mkdir(parents=True, exist_ok=True, mode=0o700)
+    sweep_outbox()
     return sorted(OUTBOX.glob("*.json"), key=lambda path: path.stat().st_mtime_ns)
 
 
+@contextmanager
+def outbox_transaction():
+    OUTBOX.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (OUTBOX.parent / "outbox.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def queue_for_mac(kind, value=None):
-    if len(mailbox()) >= 12:
-        raise RequestError("There are 12 transfers waiting for your Mac.")
     token = uuid.uuid4().hex
     item = {"id": token, "kind": kind}
-    payload = OUTBOX / f"{token}.bin"
-    temporary = OUTBOX / f"{token}.part"
+    partial = OUTBOX / f"{token}.part"
+    OUTBOX.mkdir(parents=True, exist_ok=True, mode=0o700)
     if kind == "file":
         selected = Path(value)
         item["name"] = file_name(selected.name)
         if not selected.is_file():
             raise RequestError("Choose a regular file.")
-        with selected.open("rb") as source, payload.open("xb") as target:
+        with selected.open("rb") as source, partial.open("xb") as target:
             try:
                 item["size"], item["sha256"] = copy_file(source, target)
             except BaseException:
-                payload.unlink(missing_ok=True)
+                partial.unlink(missing_ok=True)
                 raise
     elif kind == "link":
         item["url"] = browser_url(value)
     elif kind not in {"projects", "desktop"}:
         raise RequestError("Unknown handoff.")
-    try:
-        temporary.write_text(json.dumps(item))
-        os.replace(temporary, OUTBOX / f"{token}.json")
-    except OSError:
-        temporary.unlink(missing_ok=True)
-        payload.unlink(missing_ok=True)
-        raise
+    publish_handoff(item, partial)
     return item
+
+
+def publish_handoff(item, partial):
+    manifest = OUTBOX / f"{item['id']}.json"
+    temporary = OUTBOX / f"{item['id']}.json.part"
+    try:
+        with outbox_transaction():
+            if len(mailbox()) >= 12:
+                raise RequestError("There are 12 transfers waiting for your Mac.")
+            if partial.exists():
+                os.replace(partial, OUTBOX / f"{item['id']}.bin")
+            temporary.write_text(json.dumps(item))
+            os.replace(temporary, manifest)
+    except (OSError, RequestError):
+        partial.unlink(missing_ok=True)
+        manifest.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
+        (OUTBOX / f"{item['id']}.bin").unlink(missing_ok=True)
+        raise
 
 
 def copy_file(source, target, expected=None):
@@ -285,6 +338,24 @@ def acknowledge_handoff(token):
         (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
 
 
+def reject_handoff(token):
+    receipts = transfer_receipts()
+    queued = OUTBOX / f"{token}.json"
+    rejection = receipts / f"mac-reject-{token}.json"
+    with (receipts / "mac-files.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not (queued.exists() or rejection.exists() or (receipts / f"mac-file-{token}.json").exists()):
+            raise RequestError("This handoff ticket is unknown.")
+        save_transfer_receipt(rejection, {"rejected": True})
+        queued.unlink(missing_ok=True)
+        (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
+        rejected = sorted(receipts.glob("mac-reject-*.json"),
+                          key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        for old in rejected[100:]:
+            old.unlink(missing_ok=True)
+    return {}
+
+
 def mac_file_status(token):
     if (OUTBOX / f"{token}.json").is_file():
         return "queued"
@@ -319,21 +390,35 @@ def commit_upload(folder, staged, token, name, volume, size, digest):
             state = {"manifest": manifest, "path": str(destination), "delivered": False}
             save_transfer_receipt(receipt, state)
 
-        try:
-            os.link(staged, destination)
-        except FileExistsError:
-            # Never follow a symlink or read a special file when recovering
-            # an interrupted commit at a planned destination.
-            descriptor = os.open(destination, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(descriptor, "rb") as existing:
-                if not S_ISREG(os.fstat(existing.fileno()).st_mode):
-                    raise RequestError("The transfer destination is occupied.")
-                _, actual = copy_file(existing, None, size)
-            if actual != digest:
+        if not publish_upload(staged, destination, size, digest):
+            if destination == collision:
+                raise RequestError("A different file occupies the transfer destination.")
+            destination = collision
+            state["path"] = str(destination)
+            save_transfer_receipt(receipt, state)
+            if not publish_upload(staged, destination, size, digest):
                 raise RequestError("A different file occupies the transfer destination.")
         state["delivered"] = True
         save_transfer_receipt(receipt, state)
         return {"path": str(destination), "sha256": digest}
+
+
+def publish_upload(staged, destination, size, digest):
+    try:
+        os.link(staged, destination)
+        return True
+    except FileExistsError:
+        # Never follow a symlink or read a special file when recovering
+        # an interrupted commit at a planned destination.
+        descriptor = os.open(destination, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as existing:
+        status = os.fstat(existing.fileno())
+        if not S_ISREG(status.st_mode):
+            raise RequestError("The transfer destination is occupied.")
+        if status.st_size != size:
+            return False
+        _, actual = copy_file(existing, None, size)
+    return actual == digest
 
 
 def deliver_link(value, ticket):
@@ -446,18 +531,33 @@ def clipboard(action, value=None):
     if protected_clipboard(available.stdout):
         raise RequestError("Linux marked this clipboard item as sensitive.")
     with subprocess.Popen(paste, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
-        signal.alarm(6)
         try:
-            data = process.stdout.read(MAX_CLIPBOARD + 1)
+            data = read_before_deadline(process.stdout.fileno(), MAX_CLIPBOARD, 6)
             if len(data) > MAX_CLIPBOARD:
                 raise RequestError("Linux clipboard text exceeds 64 KiB.")
             if process.wait(timeout=2) or not data:
                 raise RequestError("The Linux clipboard has no supported text.")
             return {"text": data.decode("utf-8")}
         finally:
-            signal.alarm(0)
             if process.poll() is None:
                 process.kill()
+
+
+def read_before_deadline(descriptor, limit, seconds):
+    # A clipboard helper can hold its pipe open past the text it sent, so
+    # poll the descriptor instead of blocking inside a read.
+    deadline_at = time.monotonic() + seconds
+    data = bytearray()
+    while len(data) <= limit:
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise RequestError("The Linux action took too long to respond.")
+        if select.select([descriptor], [], [], remaining)[0]:
+            chunk = os.read(descriptor, 65_536)
+            if not chunk:
+                break
+            data.extend(chunk)
+    return bytes(data)
 
 
 def send_clipboard_frame(kind, **fields):
@@ -482,13 +582,9 @@ def clipboard_event(marker):
     if (formats.returncode or protected_clipboard(formats.stdout)
             or not any(name.startswith(b"text/plain") or name == b"UTF8_STRING" for name in names)):
         return
-    signal.alarm(4)
-    try:
-        raw = sys.stdin.buffer.read(MAX_CLIPBOARD + 1)
-        if raw and b"\x00" not in raw and len(raw) <= MAX_CLIPBOARD:
-            send_clipboard_frame("clipboard", text=raw.decode())
-    finally:
-        signal.alarm(0)
+    raw = read_before_deadline(sys.stdin.fileno(), MAX_CLIPBOARD, 4)
+    if raw and b"\x00" not in raw and len(raw) <= MAX_CLIPBOARD:
+        send_clipboard_frame("clipboard", text=raw.decode())
 
 
 def clipboard_stream():
@@ -625,6 +721,10 @@ def job_presets(project):
         presets.append({"id": "build", "name": "Build", "argv": project["build"],
                         "artifact": project.get("artifact")})
     if isinstance(configured, list):
+        for position, preset in enumerate(configured, start=1):
+            if isinstance(preset, dict) and ("id" not in preset or "argv" not in preset):
+                raise ConfigError(f"Add an id and argv to preset {position} of "
+                                  f"{project['name']} in {CONFIG}.")
         presets.extend(configured)
     known = set()
     for preset in presets:
@@ -1025,7 +1125,11 @@ def scrape(url):
     if not isinstance(url, str) or len(url) > 2048:
         raise RequestError("Enter a public HTTPS URL.")
     start = time.monotonic()
+    deadline_at = start + 20
     for _ in range(5):
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise RequestError("The Linux action took too long to respond.")
         if re.search(r"[\x00-\x20\x7f]", url):
             raise RequestError("The URL contains unescaped spaces or controls.")
         parsed = urlsplit(url)
@@ -1034,7 +1138,8 @@ def scrape(url):
         if parsed.port not in (None, 443):
             raise RequestError("Only the standard HTTPS port is supported.")
         host = parsed.hostname.encode("idna").decode()
-        connection = PublicHTTPSConnection(host, timeout=5, context=ssl.create_default_context())
+        connection = PublicHTTPSConnection(host, timeout=min(5, remaining),
+                                           context=ssl.create_default_context())
         try:
             target = parsed.path or "/"
             if parsed.query:
@@ -1170,6 +1275,8 @@ def request(payload):
     if action == "ack":
         acknowledge_handoff(ticket_id(payload.get("project")))
         return {}
+    if action == "reject":
+        return reject_handoff(ticket_id(payload.get("project")))
     if action == "agents":
         return {"agents": agent_sessions()}
     if action == "mac-file-status":
@@ -1179,11 +1286,7 @@ def request(payload):
     if action in {"clipboard-put", "clipboard-get"}:
         return clipboard(action, payload.get("text"))
     if action == "scrape":
-        signal.alarm(20)
-        try:
-            return scrape(payload.get("url"))
-        finally:
-            signal.alarm(0)
+        return scrape(payload.get("url"))
     if action in {"open", "open-terminal", "build"}:
         project = next((entry for entry in projects() if entry["id"] == payload.get("project")), None)
         if not project:
@@ -1206,16 +1309,11 @@ def request(payload):
     raise RequestError("Unknown Handoff Fox action.")
 
 
-def deadline(_signum, _frame):
-    raise RequestError("The Linux action took too long to respond.")
-
-
 def end_clipboard_stream(_signum, _frame):
     raise EOFError
 
 
 def main():
-    signal.signal(signal.SIGALRM, deadline)
     os.umask(0o077)
     if len(sys.argv) == 5 and sys.argv[1] == "--run-job":
         run_job(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
