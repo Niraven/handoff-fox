@@ -1,0 +1,75 @@
+name: Publish documentation site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      published: ${{ steps.pages.outputs.published }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the documentation site
+        run: python3 -B script/build_site.py
+      - name: Check the generated pages
+        run: python3 -B -m unittest discover -s script -p 'test_site.py'
+      - name: Check that GitHub Pages is enabled
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/pages")
+          if [ "$status" = "200" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          elif [ "$status" = "404" ]; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### GitHub Pages is not enabled"
+              echo
+              echo "The site built successfully, but this repository has no Pages site to publish it to."
+              echo "An owner can enable it in **Settings → Pages → Source: GitHub Actions**."
+              echo "The next push to \`main\` publishes the existing pages, or run this workflow again."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=GitHub Pages is off::Set Settings -> Pages -> Source: GitHub Actions, then re-run this workflow."
+          else
+            echo "::error::Reading the Pages configuration returned HTTP $status instead of 200 or 404."
+            exit 1
+          fi
+      - name: Upload the site
+        if: steps.pages.outputs.published == 'true'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    name: Deploy site
+    needs: build
+    if: needs.build.outputs.published == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
