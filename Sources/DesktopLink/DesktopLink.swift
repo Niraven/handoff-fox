@@ -289,11 +289,12 @@ final class LinkController: NSObject, NSApplicationDelegate {
         }
         let reachability = workbenchModel.reachability(for: workbenchModel.selected)
         let dimmed = reachability.isUnreachable
+        let needsAttention = warning
         let image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { _ in
             NSGraphicsContext.current?.imageInterpolation = .none
             art.draw(in: NSRect(x: 1, y: lift, width: 18, height: 18),
                      from: .zero, operation: .sourceOver, fraction: dimmed ? 0.45 : 1)
-            if warning {
+            if needsAttention {
                 NSColor.black.setFill()
                 NSBezierPath(ovalIn: NSRect(x: 15, y: 14, width: 4, height: 4)).fill()
             }
