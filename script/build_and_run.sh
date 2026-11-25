@@ -24,6 +24,7 @@ if [[ "$mode" != --package ]] && pgrep -x DesktopLink >/dev/null; then
 fi
 install -m 755 "$binary" "$bundle/Contents/MacOS/DesktopLink"
 mkdir -p "$bundle/Contents/Resources"
+install -m 644 "$root/LICENSE" "$bundle/Contents/Resources/LICENSE"
 install -m 644 "$root/assets/DesktopLink.png" "$bundle/Contents/Resources/DesktopLink.png"
 install -m 644 "$root/assets/TrayFox.png" "$bundle/Contents/Resources/TrayFox.png"
 install -m 644 "$root/peer/desktop_link_peer.py" "$bundle/Contents/Resources/desktop-link-peer"

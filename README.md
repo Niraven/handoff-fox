@@ -18,6 +18,8 @@ Keep your Linux workspace running while you work on your Mac. Click the fox in t
 
 Pairing uses your existing SSH access. The Mac checks the Linux host key and installs a user-level receiver when needed. A Tailscale connection was used in the live desktop test. The Linux machine can also be reached through a verified SSH alias on your network.
 
+The fox reacts to reconnects and can show the state of an approved Linux job. Drop a local file on the fox in Mac Quick Actions or on the Linux tray card to send it to the paired device.
+
 ## Try the source preview
 
 Start with an **Apple Silicon Mac** and a **Linux machine you can reach with an SSH key**. For desktop control, use a running Hyprland session with Gliff installed. The desktop flow has been exercised on Omarchy. The receiver has also been exercised on a separate Debian SSH setup.
@@ -32,8 +34,8 @@ This release ships source for a local build. A downloadable Mac installer needs 
 
 1. Verify physical sleep and wake, LAN-to-Tailscale recovery, and different keyboard and display setups.
 2. Time a first pairing on a clean Mac and verify which actions work on Omarchy, another Hyprland distro, and headless Linux.
-3. Choose the project license and test a Developer ID-signed, notarized Mac installer.
+3. Test a Developer ID-signed, notarized Mac installer on a clean Mac.
 
 [Read the roadmap and acceptance tests](docs/ROADMAP.md).
 
-[Development and upstream updates](docs/DEVELOPMENT.md) · [Third-party notices](dependencies/licenses/README.md)
+[Development and upstream updates](docs/DEVELOPMENT.md) · [MIT license](LICENSE) · [Third-party notices](dependencies/licenses/README.md)

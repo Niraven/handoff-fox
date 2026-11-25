@@ -9,6 +9,8 @@
 
 The Mac menu uses SwiftUI and AppKit. The Linux tray uses GTK 4 and D-Bus. The versioned receiver protocol runs over verified OpenSSH. Building the Mac app packages the Gliff viewer and its runtime inside the app.
 
+GitHub Actions runs `bash script/check_mac.sh` on macOS and the receiver regression suite on Ubuntu. Use those same commands to reproduce a failure locally. The tests use temporary state and the workflow needs read access to the source.
+
 ## Update upstream components
 
 The viewer builds from a checksum-pinned mac-gliff source release. `dependencies/mac-gliff-window-title.patch` adds the window title and Actual Size options. Retest both scaling modes and pointer alignment when updating the patch. Video, input, and reconnect come from upstream.
@@ -64,3 +66,5 @@ uv run --with 'mcp>=2,<3' python /absolute/path/to/script/handoff-fox-jobs.py us
 - The Mac shortcut and the Citadel tray opened their quick panels.
 - Isolated Citadel jobs returned exit status, logs, and a verified artifact across new SSH sessions. The supervisor-loss regression verifies process cleanup and project unlock. An interrupted acknowledgment test kept one copy of a transferred file across app restart.
 - Developer ID and notarization are pending for a public Mac installer.
+
+To prepare the public installer after Developer ID becomes available, inventory licenses in the bundled viewer runtime, sign nested components before the containing app using the same Developer ID team, notarize and staple the app, then verify it with Gatekeeper on a clean Apple Silicon Mac. Time first pairing after preparing the Linux SSH key and confirming its host fingerprint. [Apple notarization steps](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)

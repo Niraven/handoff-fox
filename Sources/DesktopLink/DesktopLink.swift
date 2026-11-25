@@ -97,7 +97,6 @@ final class LinkController: NSObject, NSApplicationDelegate {
             devices: workbenchModel,
             clipboardSync: clipboardSync,
             desktop: desktop,
-            art: art,
             close: { [weak self] in self?.popover.performClose(nil) },
             workbench: { [weak self] in self?.showWorkbench() }
         ))
@@ -266,6 +265,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
             window.title = "Handoff Fox Quick Actions"
             window.isReleasedWhenClosed = false
             window.isFloatingPanel = true
+            window.hidesOnDeactivate = false
             let view = NSHostingController(rootView: QuickActions(model: workbenchModel, desktop: desktop,
                 close: { [weak window] in window?.orderOut(nil) },
                 workbench: { [weak self] in self?.showWorkbench() }))
@@ -303,9 +303,14 @@ struct LinkPanel: View {
     @ObservedObject var devices: WorkbenchModel
     @ObservedObject var clipboardSync: ClipboardSync
     @ObservedObject var desktop: RemoteDesktop
-    let art: NSImage?
     let close: () -> Void
     let workbench: () -> Void
+    @AppStorage("foxShowsJobs") private var showsJobs = false
+    @State private var hoveringFox = false
+    @State private var targetingFile = false
+    @State private var celebrating = false
+    @State private var celebration: Task<Void, Never>?
+    @State private var jobsReachable: Bool?
 
     private let ink = Color(red: 0.09, green: 0.06, blue: 0.13)
     private let plum = Color(red: 0.16, green: 0.10, blue: 0.23)
@@ -334,11 +339,12 @@ struct LinkPanel: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .tint(lilac)
+                if showsJobs { jobActivity }
                 if showsInput { deviceDetails }
             }
-            if let feedback = desktop.message ?? model.message ?? devices.clipboardFeedback {
+            if let feedback = desktop.message ?? devices.error ?? model.message ?? devices.clipboardFeedback ?? devices.notice {
                 Text(feedback)
-                    .foregroundStyle(desktop.message != nil || model.message != nil ? .pink : muted)
+                    .foregroundStyle(desktop.message != nil || devices.error != nil || model.message != nil ? .pink : muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -349,23 +355,35 @@ struct LinkPanel: View {
         .background(LinearGradient(colors: [plum, ink], startPoint: .topTrailing, endPoint: .bottomLeading))
         .preferredColorScheme(.dark)
         .onExitCommand(perform: close)
+        .task(id: showsJobs ? devices.selected : nil) {
+            jobsReachable = nil
+            guard showsJobs, let host = devices.selected else { return }
+            await devices.loadSelectedIfNeeded(host)
+            while !Task.isCancelled {
+                let ready = await devices.refreshJobs()
+                guard !Task.isCancelled, devices.selected == host else { return }
+                jobsReachable = ready
+                try? await Task.sleep(for: .seconds(devices.jobs.contains { $0.state.isActive } ? 3 : 10))
+            }
+        }
+        .onChange(of: model.hop) { _, _ in
+            if showsInput { celebrate() }
+        }
+        .onChange(of: devices.jobs) { previous, current in
+            guard showsJobs else { return }
+            let running = Set(previous.filter { $0.state.isActive }.map(\.id))
+            if current.contains(where: { $0.state == .succeeded && running.contains($0.id) }) { celebrate() }
+        }
+        .onDisappear {
+            celebration?.cancel()
+            celebrating = false
+        }
     }
 
     private var header: some View {
         HStack(spacing: 9) {
-            Group {
-                if let art {
-                    Image(nsImage: art).renderingMode(.template).resizable()
-                        .interpolation(.none).scaledToFit().frame(width: 22, height: 22)
-                } else {
-                    Image(systemName: "laptopcomputer").font(.system(size: 15, weight: .medium))
-                }
-            }
-                .foregroundStyle(lilac)
-                .frame(width: 40, height: 40)
-                .background(lilac.opacity(0.15), in: RoundedRectangle(cornerRadius: 13))
-                .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(lilac.opacity(0.22)))
-                .accessibilityHidden(true)
+            FoxCompanion(attentive: hoveringFox || targetingFile, celebrating: celebrating)
+                .onHover { hoveringFox = $0 }
             VStack(alignment: .leading, spacing: 2) {
                 Text(devices.selected == nil ? "Handoff Fox" : devices.selectedName)
                     .font(.system(size: 16, weight: .semibold))
@@ -376,6 +394,9 @@ struct LinkPanel: View {
                         .labelStyle(CompactStatusLabel())
                         .foregroundStyle(status.connected ? mint : muted)
                 }
+                if targetingFile, devices.selected != nil {
+                    Text("Drop to send").font(.caption).foregroundStyle(apricot)
+                }
             }
             Spacer(minLength: 0)
             if showsInput, let status = model.status {
@@ -385,11 +406,70 @@ struct LinkPanel: View {
                 }
                 .disabled(model.updating)
             }
+            if devices.selected != nil {
+                Menu {
+                    Toggle("Show Linux jobs", isOn: $showsJobs)
+                } label: {
+                    Image(systemName: "ellipsis.circle").font(.system(size: 14))
+                }
+                .menuIndicator(.hidden)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .foregroundStyle(lilac)
+                .accessibilityLabel("Fox options")
+            }
             icon("xmark", label: "Close status", action: close)
         }
         .padding(9)
         .background(lilac.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(lilac.opacity(0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(targetingFile ? apricot : lilac.opacity(0.10)))
+        .dropDestination(for: URL.self) { items, _ in devices.acceptFileDrop(items) } isTargeted: { value in
+            targetingFile = value && devices.selected != nil && devices.running == nil
+        }
+    }
+
+    @ViewBuilder private var jobActivity: some View {
+        if jobsReachable == true, let job = devices.jobs.first(where: { $0.state.isActive }) ?? devices.jobs.first {
+            Button {
+                let host = devices.selected
+                workbench()
+                Task {
+                    if host == devices.selected { await devices.inspectJob(job) }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: job.state.isActive ? "hourglass" :
+                            job.state == .succeeded ? "checkmark.circle" :
+                            job.state == .failed ? "exclamationmark.circle" : "minus.circle")
+                        .foregroundStyle(job.state == .failed ? apricot : mint)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(job.title).lineLimit(1).foregroundStyle(.white)
+                        Text(job.state.label).font(.caption).foregroundStyle(muted)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(lilac)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(9)
+            .background(lilac.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            .help("Open this job in Handoff Fox")
+        } else {
+            Label(jobsReachable == nil ? "Checking Linux jobs…" :
+                    jobsReachable == true ? "No recent Linux jobs" : "Linux job status unavailable",
+                  systemImage: "terminal")
+                .foregroundStyle(muted)
+        }
+    }
+
+    private func celebrate() {
+        celebration?.cancel()
+        celebrating = true
+        celebration = Task {
+            try? await Task.sleep(for: .milliseconds(230))
+            if !Task.isCancelled { celebrating = false }
+        }
     }
 
     private var deviceDetails: some View {

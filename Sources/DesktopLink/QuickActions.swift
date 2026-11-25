@@ -8,6 +8,7 @@ struct QuickActions: View {
 
     @State private var link = ""
     @State private var enteringLink = false
+    @State private var targetingFile = false
     @FocusState private var linkFocused: Bool
 
     private var desktopPeer: String? {
@@ -17,14 +18,22 @@ struct QuickActions: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                if let target = model.selected {
-                    Text(model.deviceName(target)).font(.headline)
-                } else {
-                    Text("Pair a Linux device").font(.headline)
+            HStack(spacing: 9) {
+                FoxCompanion(attentive: targetingFile, celebrating: false)
+                VStack(alignment: .leading, spacing: 2) {
+                    if let target = model.selected {
+                        Text(model.deviceName(target)).font(.headline)
+                    } else {
+                        Text("Pair a Linux device").font(.headline)
+                    }
+                    if targetingFile { Text("Drop to send").font(.caption).foregroundStyle(.secondary) }
                 }
                 Spacer()
                 Button(model.selected == nil ? "Pair…" : "All controls", action: workbench)
+            }
+            .contentShape(Rectangle())
+            .dropDestination(for: URL.self) { items, _ in model.acceptFileDrop(items) } isTargeted: { value in
+                targetingFile = value && model.selected != nil && model.running == nil
             }
             if let target = model.selected {
                 if let desktopPeer {
@@ -36,7 +45,7 @@ struct QuickActions: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.purple)
+                    .tint(Color(red: 0.47, green: 0.29, blue: 0.69))
                     .disabled(desktop.opening)
                 }
                 HStack {

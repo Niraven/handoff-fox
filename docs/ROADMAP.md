@@ -30,9 +30,16 @@ The first audience is people who work on a Mac and keep a Linux desktop or works
 
 ## Public release readiness
 
-- Choose a project license for the original code and retain third-party notices.
+- The project uses the [MIT license](../LICENSE) for its original code. Complete the notice inventory for the runtime libraries shipped in the Mac installer.
 - Build a Developer ID-signed, notarized Mac installer and test it on a clean Mac.
 - Publish a support matrix in terms of the actions each setup supports. Start with Omarchy, another Hyprland distro, and a headless SSH host. Record desktop, edge-to-edge input, clipboard, and transfers independently.
 - Watch five first-time users pair and complete their first handoff. Ask which action they returned to a week later. Use what they do to pick between richer clipboard formats, native Share menus, and wider compositor support.
+
+## Companion and agent workflows
+
+- The fox reacts to a reconnect and an observed job completion. Drop one file onto it to hand the file to the named device. The optional Linux job row opens the exact job for logs or artifacts. [Coucou’s character and session features](https://github.com/louis-cfm/coucou)
+- Add an optional completion or failure notification that opens the existing receipt or job. Group repeated alerts by device and ticket, and offer a mute control.
+- Pilot explicit status events from one agent runtime. Carry only the device, project, task ID, state, and a link to its own UI. Compare whether it saves time against the existing Linux job list before adding more adapters.
+- Measure how often users finish a cross-device task without opening a file manager, terminal, or remote desktop. That should guide which actions earn a place in the fox.
 
 [Try the source preview](SETUP.md) · [Share feedback about your setup](https://github.com/Niraven/handoff-fox/issues/new?template=preview-feedback.md)

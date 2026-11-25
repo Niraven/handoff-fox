@@ -199,8 +199,11 @@ def open_panel(start_hidden, show_handoff=False):
             window.desktop-link .fox-status { font-size: 11px; color: #d5c6e8; }
             window.desktop-link .fox-status.connected { color: #b7ebd3; }
             window.desktop-link .fox-emblem {
-                min-width: 36px; min-height: 36px; background-color: rgba(212,185,252,.15);
-                border: 1px solid rgba(212,185,252,.22); border-radius: 12px;
+                min-width: 42px; min-height: 42px; background-color: rgba(250,164,102,.14);
+                border: 1px solid rgba(250,164,102,.24); border-radius: 12px;
+            }
+            window.desktop-link .fox-emblem:drop(active) {
+                border-color: #ffc29b; background-color: rgba(250,164,102,.29);
             }
             window.desktop-link .fox-primary {
                 min-height: 35px; padding: 4px 12px; font-weight: 700;
@@ -223,8 +226,9 @@ def open_panel(start_hidden, show_handoff=False):
         header = Gtk.HeaderBar()
         header.set_decoration_layout(":close")
         emblem = Gtk.Image.new_from_icon_name("local.desktoplink.control")
-        emblem.set_pixel_size(23)
+        emblem.set_pixel_size(27)
         emblem.add_css_class("fox-emblem")
+        emblem.set_tooltip_text("Drop one local file to send to your Mac")
         header.pack_start(emblem)
         title = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         destination = Gtk.Label(label="Mac")
@@ -246,6 +250,34 @@ def open_panel(start_hidden, show_handoff=False):
         handoff_button.set_tooltip_text("Handoff · Ctrl + Alt + J")
         handoff_button.connect("clicked", lambda _: present_handoff())
         card.append(handoff_button)
+        drop_feedback = Gtk.Label(xalign=0, visible=False, wrap=True, max_width_chars=29)
+        card.append(drop_feedback)
+
+        def show_drop_feedback(message):
+            drop_feedback.set_label(message)
+            drop_feedback.set_visible(True)
+            return False
+
+        def drop_file(_target, files, _x, _y):
+            selected = files.get_files()
+            if len(selected) != 1 or not (path := selected[0].get_path()):
+                return False
+            show_drop_feedback("Queueing file…")
+
+            def send():
+                try:
+                    peer_call("--queue", "file", path)
+                    message = "File queued for your Mac."
+                except (ValueError, OSError, subprocess.SubprocessError) as error:
+                    message = str(error)
+                GLib.idle_add(show_drop_feedback, message)
+
+            executor.submit(send)
+            return True
+
+        drop_target = Gtk.DropTarget.new(Gdk.FileList.__gtype__, Gdk.DragAction.COPY)
+        drop_target.connect("drop", drop_file)
+        emblem.add_controller(drop_target)
         details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         details.add_css_class("fox-details")
         card.append(details)

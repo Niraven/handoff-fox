@@ -33,9 +33,20 @@ If you already installed the receiver with an earlier preview, run `./script/ins
 ## Files, clipboard, and projects
 
 - **Control + Option + J** opens the Mac quick panel for the last desktop, file, link, screenshot, or saved project. On Omarchy, `./script/install_hypr_hotkey.sh` adds **Ctrl + Alt + J** for the Linux quick panel.
+- Drop one local file onto the fox in Mac Quick Actions to send it to the named Linux device. On Omarchy, drop it onto the fox on the tray card to queue it for the Mac.
+- To glance at Linux jobs, open **Fox options** in the Mac menu and enable **Show Linux jobs**. Choose a job to see its logs or artifact. The glance view refreshes while the menu is open.
 - **Send & projects** accepts a dropped file up to 128 MiB or an HTTP or HTTPS link. A current Linux receiver reports delivered items in **Transfer Inbox** and keeps tickets for retries. Use **Save folder** to add a Linux project and open its folder, terminal, or approved presets.
 - **Clipboard** provides manual plain-text copy in both directions. Enable **Automatic** for each device you want to share with. An active desktop or configured input pairing is required. Wayland uses `wl-copy` and `wl-paste`.
 - For Linux-to-Mac handoffs, install the optional Linux tray using `./script/install_omarchy.sh`. Enable receiving from that device during pairing or under **Check connection**. The Linux quick panel queues files and links while the Mac is away. The Mac defaults to `~/Downloads/Handoff Fox` and lets you choose another folder for that peer.
+
+## Tested Linux setups
+
+| Linux setup | Verified |
+| --- | --- |
+| Omarchy with Hyprland and Gliff | Pairing, Mirror and Private Screen over Tailscale, reconnect after interrupting SSH, and the GTK tray. |
+| Debian 13 without a desktop | Fresh SSH receiver installation and job listing. Receiver installation took under two seconds after key and host trust setup in the test fixture. |
+
+Keyboard and clipboard support depend on the desktop session and input pairing. First-time onboarding on a clean Mac and desktop control on a second Hyprland distro remain to be verified.
 
 ## Send feedback
 

@@ -220,6 +220,14 @@ final class WorkbenchModel: ObservableObject {
         }
     }
 
+    func acceptFileDrop(_ items: [URL]) -> Bool {
+        guard let target = selected, running == nil, items.count == 1,
+              let file = items.first, file.isFileURL else { return false }
+        let volume = sendVolume
+        Task { await sendFile(file, volume: volume, to: target) }
+        return true
+    }
+
     func chooseReceiveFolder() {
         guard let target = selected else { return }
         let panel = NSOpenPanel()
@@ -276,16 +284,18 @@ final class WorkbenchModel: ObservableObject {
         }
     }
 
-    func refreshJobs() async {
-        guard supportsJobs, !checkingJobs, let address = selected else { return }
+    @discardableResult
+    func refreshJobs() async -> Bool {
+        guard supportsJobs, !checkingJobs, let address = selected else { return false }
         checkingJobs = true
         let revision = jobRevision
         defer { checkingJobs = false }
         let reply = try? await Task.detached(priority: .utility) {
             try PeerClient.request(PeerRequest(action: "job-list"), on: address)
         }.value
-        guard !Task.isCancelled, selected == address, revision == jobRevision, let list = reply?.jobs else { return }
+        guard !Task.isCancelled, selected == address, revision == jobRevision, let list = reply?.jobs else { return false }
         jobs = list
+        return true
     }
 
     func inspectJob(_ job: LinuxJob, action: String = "job-status") async {
@@ -579,13 +589,7 @@ struct Workbench: View {
             }
         }
         .disabled(model.running != nil)
-        .dropDestination(for: URL.self) { items, _ in
-            guard let target = model.selected, model.running == nil, items.count == 1,
-                  let file = items.first, file.isFileURL else { return false }
-            let volume = model.sendVolume
-            Task { await model.sendFile(file, volume: volume, to: target) }
-            return true
-        }
+        .dropDestination(for: URL.self) { items, _ in model.acceptFileDrop(items) }
     }
 
     private var desktopCard: some View {
