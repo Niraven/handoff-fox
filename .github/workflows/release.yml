@@ -58,6 +58,7 @@ jobs:
           cp "$zip" release/Handoff-Fox.zip
           tar -czf release/handoff-fox-linux-scripts.tar.gz \
             script/install_peer.sh script/install_omarchy.sh script/install_hypr_hotkey.sh \
+            script/verify_distro.sh \
             peer omarchy assets
           ( cd release && shasum -a 256 Handoff-Fox.zip handoff-fox-linux-scripts.tar.gz > SHA256SUMS )
           cat release/SHA256SUMS

@@ -37,6 +37,10 @@ A cell becomes verified only when a run is recorded and the setup is named. "It 
 | Add a build preset from the Mac | untested | untested | untested | untested |
 | Trust a new host key in the app | untested | untested | untested | untested |
 
+### Recording a run on a new distribution
+
+`script/verify_distro.sh` runs the host half of the check in one command and prints the checklist for the Mac half; [Development](DEVELOPMENT.md) describes both. A cell moves off untested only when that report and the Mac run behind it are named in the evidence list.
+
 ### Why the empty rows are empty
 
 The headless column has no desktop, so desktop, input, clipboards, and the tray are out of scope there by design. Transfer, project, and job actions are not, and the headless setup has a verified install and a verified job listing, nothing more. A headless host can still receive files and run approved presets; nobody has recorded doing it.
