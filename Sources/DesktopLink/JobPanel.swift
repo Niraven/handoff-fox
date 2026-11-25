@@ -69,7 +69,7 @@ struct JobPanel: View {
             }
             Spacer()
             if job.state.canCancel {
-                Button("Cancel", role: .destructive) { Task { await model.inspectJob(job, action: "job-cancel") } }
+                Button("Cancel", role: .destructive) { Task { await model.cancel(job) } }
             }
             Button("Details") { Task { await model.inspectJob(job) } }
         }

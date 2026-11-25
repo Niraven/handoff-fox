@@ -79,34 +79,46 @@ struct FoxTransferFeedback: View {
     let address: String?
     let device: String
     var busy = false
+    @Environment(\.colorScheme) private var scheme
+
+    private var palette: FoxPalette { FoxPalette(scheme: scheme) }
 
     var body: some View {
         if let record = inbox.latestOutgoingFile(to: address) {
-            HStack(alignment: .top, spacing: 7) {
-                Image(systemName: symbol(for: record.status))
-                    .foregroundStyle(record.status == .retry ? Color.orange : Color.secondary)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(record.title).lineLimit(1)
-                    Text(record.status == .delivered ? "Delivered to \(device)" : record.status.label)
-                        .foregroundStyle(record.status == .retry ? Color.orange : Color.secondary)
-                    if record.status == .retry, let reason = record.error {
-                        Text(reason).foregroundStyle(.secondary).lineLimit(3)
-                    }
+            HStack(alignment: .center, spacing: 8) {
+                if record.status == .queued || record.status == .sending {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: symbol(for: record.status))
+                        .foregroundStyle(record.status == .retry ? palette.warning : palette.success)
+                        .accessibilityHidden(true)
                 }
-                Spacer(minLength: 2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(record.title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(palette.textPrimary)
+                        .lineLimit(1)
+                    Text(record.status == .delivered ? "Delivered to \(record.destination)"
+                                                     : (record.error ?? record.status.label))
+                        .font(.system(size: 10))
+                        .foregroundStyle(record.status == .retry ? palette.warning : palette.textTertiary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
                 if record.status == .queued || record.status == .retry {
                     Button("Retry") { Task { await inbox.retry(record) } }
-                        .accessibilityLabel("Retry \(record.title)")
+                        .buttonStyle(FoxSecondaryButtonStyle(compact: true))
                         .disabled(busy)
+                        .accessibilityLabel("Retry \(record.title)")
                 } else if record.status == .delivered {
-                    Button("Show in Folder") { Task { await inbox.reveal(record) } }
+                    Button("Show") { Task { await inbox.reveal(record) } }
+                        .buttonStyle(FoxSecondaryButtonStyle(compact: true))
                 }
             }
-            .font(.caption)
-            .controlSize(.small)
             .padding(8)
-            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+            .foxCard(raised: false, radius: 9)
+            .accessibilityElement(children: .contain)
         }
     }
 
