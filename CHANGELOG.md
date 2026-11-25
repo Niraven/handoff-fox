@@ -4,6 +4,10 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **A distribution check** (`script/verify_distro.sh`) that runs the receiver over the same JSON interface the Mac uses and prints a report whose rows match the support matrix, with the Mac-side checklist underneath. It ships in the Linux scripts archive.
+
 ### Fixed
 
 - **The packaged app reports its release version.** `script/build_and_run.sh` takes `CFBundleShortVersionString` from `HANDOFF_FOX_VERSION` or the nearest tag instead of a hardcoded `0.1.0`, and the release workflow passes the tag through and publishes any tag with a `-` suffix as a GitHub pre-release.

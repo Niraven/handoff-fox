@@ -70,3 +70,19 @@ uv run --with 'mcp>=2,<3' python /absolute/path/to/script/handoff-fox-jobs.py us
 - Developer ID and notarization are pending for a public Mac installer.
 
 To prepare the public installer after Developer ID becomes available, inventory licenses in the bundled viewer runtime, sign nested components before the containing app using the same Developer ID team, notarize and staple the app, then verify it with Gatekeeper on a clean Apple Silicon Mac. Time first pairing after preparing the Linux SSH key and confirming its host fingerprint. [Apple notarization steps](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
+
+## Verify a new distribution
+
+`docs/SUPPORT.md` lists a column for a Hyprland distribution other than Omarchy. Filling a cell there takes one run on that machine, in two halves, and neither half is optional — the Mac rows say nothing about the Linux side, and the Linux rows say nothing about what a Mac can reach.
+
+Start on the Linux machine, from a checkout of this repository:
+
+```sh
+./script/verify_distro.sh --report handoff-fox-distro.md
+```
+
+It runs the receiver over the same JSON interface the Mac uses (`pair`, `job-list`, `agents`, `setup-hint`), so the answers are the ones a Mac will get rather than a shell impression of them. It reports the distribution, the session type, and the compositor it saw, records each host-side stage as pass or fail with the message behind the failure, and exits non-zero when a stage fails. Keep the report: it is the evidence line the support matrix needs.
+
+Then run the checklist the script prints, from the Mac, against that machine. Record a failure with its exact stage and message — a named failure is worth more to the next reader than a blank cell. Two of these steps have no substitute: a transfer that is interrupted and retried with the same ticket, and one job preset.
+
+Write the results into `docs/SUPPORT.md` in the same commit that names the distribution in the evidence list, and update the column heading if the distribution deserves its own. Leave a cell untested until its half of the run actually happened.
