@@ -314,6 +314,28 @@ class DurableJobTests(unittest.TestCase):
         directory = str(self.project.resolve())
         self.assertEqual(json.loads(marker.read_text()), [directory, f"--working-directory={directory}"])
 
+    def test_scrape_name_resolution_honors_the_deadline(self):
+        spec = importlib.util.spec_from_file_location("test_fox_peer", PEER)
+        peer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(peer)
+
+        def hang(*args, **kwargs):
+            time.sleep(30)
+            return []
+
+        with patch.object(peer.socket, "getaddrinfo", hang):
+            started = time.monotonic()
+            with self.assertRaises(peer.RequestError) as caught:
+                peer.public_addresses("example.com", timeout=0.2)
+            self.assertIn("too long", str(caught.exception))
+            self.assertLess(time.monotonic() - started, 2)
+            connection = peer.PublicHTTPSConnection("example.com", timeout=0.2)
+            started = time.monotonic()
+            with self.assertRaises(peer.RequestError) as caught:
+                connection.connect()
+            self.assertIn("too long", str(caught.exception))
+            self.assertLess(time.monotonic() - started, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

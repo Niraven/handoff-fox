@@ -2,6 +2,7 @@
 """Check the receiver's durable transfer protocol in a temporary home."""
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 import uuid
 from pathlib import Path
 
@@ -184,6 +186,33 @@ class TransferReceiptTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in self.outbox.iterdir()),
                          sorted([f"{queued['id']}.bin", f"{queued['id']}.json", in_flight.name]))
         self.assertFalse(any(path.exists() for path in stale))
+
+    def load_peer(self):
+        spec = importlib.util.spec_from_file_location("test_fox_outbox", RECEIVER)
+        peer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(peer)
+        peer.OUTBOX = self.outbox
+        self.outbox.mkdir(parents=True, exist_ok=True)
+        return peer
+
+    def test_sweep_ignores_payloads_removed_after_listing(self):
+        peer = self.load_peer()
+        vanished = [
+            self.outbox / f"{uuid.uuid4().hex}{suffix}" for suffix in (".json", ".part", ".bin")
+        ]
+        for path in vanished:
+            path.write_bytes(b"half a handoff")
+        original_stat = Path.stat
+
+        def racing_stat(path, *args, **kwargs):
+            if path in vanished:
+                path.unlink(missing_ok=True)
+            return original_stat(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", racing_stat):
+            peer.sweep_outbox()
+            self.assertEqual(peer.mailbox(), [])
+        self.assertEqual(list(self.outbox.iterdir()), [])
 
     def test_interrupted_commit_replans_past_a_foreign_file(self):
         ticket = uuid.uuid4().hex

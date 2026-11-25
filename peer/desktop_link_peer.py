@@ -185,22 +185,36 @@ def ticket_id(token):
 def sweep_outbox():
     now = time.time()
     for manifest in OUTBOX.glob("*.json"):
-        if now - manifest.stat().st_mtime > QUEUE_TTL:
+        try:
+            stale = now - manifest.stat().st_mtime > QUEUE_TTL
+        except FileNotFoundError:
+            continue
+        if stale:
             manifest.unlink(missing_ok=True)
             (OUTBOX / f"{manifest.stem}.bin").unlink(missing_ok=True)
     for stray in (*OUTBOX.glob("*.part"), *OUTBOX.glob("*.bin")):
         # Nothing refers to a payload or a half-written manifest until its
         # manifest is renamed into place, so neither holds a queue slot.
         token = stray.name.partition(".")[0]
-        if (now - stray.stat().st_mtime > ORPHAN_TTL
-                and not (OUTBOX / f"{token}.json").is_file()):
+        try:
+            stale = (now - stray.stat().st_mtime > ORPHAN_TTL
+                     and not (OUTBOX / f"{token}.json").is_file())
+        except FileNotFoundError:
+            continue
+        if stale:
             stray.unlink(missing_ok=True)
 
 
 def mailbox():
     OUTBOX.mkdir(parents=True, exist_ok=True, mode=0o700)
     sweep_outbox()
-    return sorted(OUTBOX.glob("*.json"), key=lambda path: path.stat().st_mtime_ns)
+    queued = []
+    for path in OUTBOX.glob("*.json"):
+        try:
+            queued.append((path.stat().st_mtime_ns, path))
+        except FileNotFoundError:
+            continue
+    return [path for _, path in sorted(queued)]
 
 
 @contextmanager
@@ -1059,8 +1073,27 @@ def job_request(action, payload):
     return {"job": job}
 
 
-def public_addresses(host):
-    records = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+def public_addresses(host, timeout=5):
+    records = []
+    error = []
+
+    def resolve():
+        try:
+            records.extend(socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM))
+        except OSError as caught:
+            error.append(caught)
+
+    # libc name resolution ignores socket timeouts, so bound it on a worker.
+    wait = 5 if timeout is None else timeout
+    if wait <= 0:
+        raise RequestError("The Linux action took too long to respond.")
+    worker = threading.Thread(target=resolve, daemon=True)
+    worker.start()
+    worker.join(wait)
+    if worker.is_alive():
+        raise RequestError("The Linux action took too long to respond.")
+    if error:
+        raise error[0]
     for family, _, _, _, address in records:
         ip = ipaddress.ip_address(address[0])
         if (family not in (socket.AF_INET, socket.AF_INET6)
@@ -1073,7 +1106,7 @@ class PublicHTTPSConnection(http.client.HTTPSConnection):
     def connect(self):
         # Validate and connect to the same address, with TLS still checked for the hostname.
         last_error = OSError("The hostname has no public address.")
-        for address in public_addresses(self.host):
+        for address in public_addresses(self.host, self.timeout):
             try:
                 with_socket = socket.create_connection((address, 443), self.timeout)
                 try:
@@ -1236,7 +1269,13 @@ def request(payload):
         while True:
             queued = mailbox()
             if queued or time.monotonic() >= deadline_at:
-                return {"handoffs": [json.loads(path.read_text()) for path in queued]}
+                handoffs = []
+                for path in queued:
+                    try:
+                        handoffs.append(json.loads(path.read_text()))
+                    except FileNotFoundError:
+                        continue
+                return {"handoffs": handoffs}
             time.sleep(0.5)
     if action == "ack":
         acknowledge_handoff(ticket_id(payload.get("project")))
