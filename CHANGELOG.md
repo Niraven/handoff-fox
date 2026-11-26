@@ -6,6 +6,13 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 
 ### Fixed
 
+- **Opening something on Linux is confirmed, not assumed.** A program that hands the work to the session now has 2.5 seconds to say it failed; a non-zero exit raises instead of recording a delivery, and a link whose opener failed leaves no receipt so it can be retried. A program that keeps running is still reported as dispatched.
+- **A job artifact belongs to the run that produced it.** The receiver fingerprints the configured artifact before the run and marks the collected file `artifactStale` when the run left it untouched, so a successful no-op cannot return the previous run's output as fresh.
+- **The distribution report carries no host details.** It names the distribution and session, and reports counts and messages rather than the host name, project paths, or job output, because the report is meant to be attached to an issue.
+- **The packaged app checks what it bundled.** The build refuses a bundle whose viewer lacks its licence notices or whose icon is missing, in addition to the identifier check.
+
+### Fixed
+
 - **A job can no longer keep running behind a `failed` record.** The monitor records the process group it starts, and a supervisor that comes back from a dead monitor — or a job recovered after its worker vanished — kills that group and confirms it is gone before the record says `failed`. A recorded PID whose command no longer matches is left alone, so a reused PID cannot be killed by mistake.
 - **`ack` says what it did.** It answers `confirmed`, `dispatched`, or `rejected`, resolves a retry to the record the first attempt wrote, and refuses a ticket it no longer knows instead of reporting success for a delivery that never happened.
 - **A replay checks the file.** `upload-status` and a repeated upload re-hash the destination and report `verified`, rather than repeating a remembered path after the file was moved or changed.

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Check the distribution check: it reports, and it reports failures."""
 
-import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -50,8 +48,10 @@ class VerifyDistroTests(unittest.TestCase):
         )
         identifier = release["ID"].strip('"')
         self.assertIn(identifier, text)
-        self.assertIn("- Host: ", text)
+        self.assertIn("- Distribution: ", text)
         self.assertIn("- Session: ", text)
+        hostname = os.uname().nodename
+        self.assertNotIn(hostname, text, "the report should not name the host")
 
     def test_a_missing_receiver_still_produces_a_report(self):
         run = self.run_check(self.root / "absent.py")

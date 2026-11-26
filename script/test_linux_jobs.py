@@ -169,6 +169,22 @@ class DurableJobTests(unittest.TestCase):
         self.assertNotIn("killed", recovered["error"])
         self.assertIsNone(while_we_wait.poll(), "an unrelated process was killed")
 
+    def test_an_artifact_this_run_did_not_write_is_marked_stale(self):
+        artifact = self.project / "out.txt"
+        artifact.write_text("from an earlier run")
+        self.configure("print('did nothing')", artifact="out.txt")
+        identifier = uuid.uuid4().hex
+        self.start(identifier)
+        self.assertTrue(self.wait_terminal(identifier)["job"].get("artifactStale"))
+
+        self.configure("import pathlib; pathlib.Path('out.txt').write_text('fresh')",
+                      artifact="out.txt")
+        fresh = uuid.uuid4().hex
+        self.start(fresh)
+        status = self.wait_terminal(fresh)["job"]
+        self.assertFalse(status.get("artifactStale"), status)
+        self.assertEqual(status["artifactName"], "out.txt")
+
     def wait_for(self, identifier, predicate):
         stop = time.monotonic() + 7
         while time.monotonic() < stop:

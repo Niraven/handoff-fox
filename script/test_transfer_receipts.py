@@ -160,6 +160,23 @@ class TransferReceiptTests(unittest.TestCase):
         self.assertFalse(missing["verified"], missing)
         self.assertEqual(self.upload(ticket, body)["verified"], False)
 
+    def test_a_link_that_cannot_open_is_not_reported_delivered(self):
+        bin_directory = self.root / "bin"
+        bin_directory.mkdir(exist_ok=True)
+        opener = bin_directory / "xdg-open"
+        opener.write_text("#!/bin/sh\nexit 1\n")
+        opener.chmod(0o755)
+        self.env["PATH"] = str(bin_directory) + os.pathsep + os.environ.get("PATH", "")
+        self.env["DISPLAY"] = ":0"
+        ticket = uuid.uuid4().hex
+        request = {"version": 1, "action": "deliver-link", "project": ticket,
+                   "url": "https://example.com/notes"}
+        reply = self.invoke([], json.dumps(request).encode())
+        self.assertFalse(reply["ok"], reply)
+        self.assertIn("failed", reply["error"])
+        receipt = self.receipts / f"link-{ticket}.json"
+        self.assertFalse(receipt.exists(), "a link that failed to open kept a delivery receipt")
+
     def test_reject_is_idempotent_and_unblocks_the_queue(self):
         sample = self.root / "pilot.txt"
         sample.write_text("A file the Mac refuses.")

@@ -40,6 +40,9 @@ JOBS = OUTBOX.parent / "jobs"
 JOB_TIMEOUT = 900
 QUEUE_TTL = 7 * 24 * 60 * 60
 ORPHAN_TTL = 24 * 60 * 60
+# How long a program that hands its work to the session may take before the
+# receiver calls the action dispatched instead of waiting for a code.
+LAUNCH_CONFIRM = 2.5
 ACTIVE_JOB_STATES = {"queued", "running", "cancelling"}
 MAX_PRESETS = 20
 GLIFF_DOCS = "https://github.com/omacom/gliff"
@@ -202,8 +205,20 @@ def launch_graphical(arguments, directory=None):
                 return
     env = graphical_environment()
     if env.get("WAYLAND_DISPLAY") or env.get("DISPLAY"):
-        subprocess.Popen(arguments, cwd=directory, env=env, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            process = subprocess.Popen(arguments, cwd=directory, env=env, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       start_new_session=True)
+        except OSError as error:
+            raise RequestError("Linux could not start the program that opens this.") from error
+        # A program that hands the work to the session and exits says whether
+        # it managed it. One that keeps running is the viewer itself.
+        try:
+            code = process.wait(timeout=LAUNCH_CONFIRM)
+        except subprocess.TimeoutExpired:
+            return
+        if code:
+            raise RequestError("The program that opens this failed on Linux.")
         return
     raise RequestError("Open a graphical Linux session before using this action.")
 
@@ -1105,6 +1120,17 @@ def collect_job_output(process, directory, supervisor):
     return code, length > MAX_OUTPUT, error
 
 
+def artifact_fingerprint(root, name):
+    """What the configured artifact looked like before the run started."""
+    if not name:
+        return None
+    try:
+        status = os.stat(root / Path(name))
+    except OSError:
+        return None
+    return [status.st_mtime_ns, status.st_size]
+
+
 def save_job_artifact(directory, root, name):
     if not name:
         return {}
@@ -1184,6 +1210,7 @@ def watch_job(identifier, worker_fd, project_fd, supervisor_fd):
         fields = {}
         try:
             spec = json.load(sys.stdin)
+            artifact_before = artifact_fingerprint(Path(spec["cwd"]), spec.get("artifact"))
             env = {key: os.environ[key] for key in
                    ("HOME", "USER", "PATH", "LANG", "LC_ALL", "TMPDIR", "XDG_CACHE_HOME")
                    if key in os.environ}
@@ -1202,7 +1229,11 @@ def watch_job(identifier, worker_fd, project_fd, supervisor_fd):
             if error:
                 fields["error"] = error
             elif code == 0 and read_job(directory)["state"] != "cancelling":
-                fields.update(save_job_artifact(directory, Path(spec["cwd"]), spec.get("artifact")))
+                collected = save_job_artifact(directory, Path(spec["cwd"]), spec.get("artifact"))
+                if "artifactSha256" in collected:
+                    after = artifact_fingerprint(Path(spec["cwd"]), spec.get("artifact"))
+                    collected["artifactStale"] = artifact_before is not None and after == artifact_before
+                fields.update(collected)
         except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError):
             fields["error"] = "The Linux job could not run. Check the configured executable and folder."
 

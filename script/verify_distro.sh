@@ -72,7 +72,8 @@ fi
 
 pair_reply="$(request pair)"
 if printf '%s' "$pair_reply" | grep -q '"ok": true'; then
-    record "Pair: receiver answers" "pass" "host $(field "$pair_reply" name)"
+    projects="$(printf '%s' "$pair_reply" | grep -o '"id":' | wc -l | tr -d ' ' || true)"
+    record "Pair: receiver answers" "pass" "${projects} saved project(s) reported"
 else
     record "Pair: receiver answers" "fail" "$(clean "${pair_reply:-no reply}")"
 fi
@@ -91,10 +92,13 @@ case "$(printf '%s' "$pair_reply" | sed -n 's/.*"clipboardAvailable": \(true\|fa
     *) record "Clipboard helper reachable" "fail" "no clipboardAvailable in the pair reply" ;;
 esac
 
+# Reports leave this machine as support evidence, so they carry counts and
+# messages rather than host names, project paths, or job output.
 for action in job-list agents; do
     reply="$(request "$action")"
     if printf '%s' "$reply" | grep -q '"ok": true'; then
-        record "Receiver action: $action" "pass" "$(clean "$reply")"
+        count="$(printf '%s' "$reply" | grep -o '"id":\|"agent":' | wc -l | tr -d ' ' || true)"
+        record "Receiver action: $action" "pass" "${count} record(s) listed"
     else
         record "Receiver action: $action" "fail" "$(clean "${reply:-no reply}")"
     fi
@@ -122,7 +126,7 @@ fi
 
 {
     printf '# Handoff Fox distribution check\n\n'
-    printf -- '- Host: %s\n' "$distro"
+    printf -- '- Distribution: %s\n' "$distro"
     printf -- '- Session: %s\n' "$session"
     printf -- '- Compositor: %s\n' "$compositor"
     printf -- '- Checked at: %s\n\n' "$started_at"
