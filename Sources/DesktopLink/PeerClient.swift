@@ -68,8 +68,6 @@ struct PeerReply: Decodable, Sendable {
     let agents: [LinuxAgentSession]?
     let packageManager: String?
     let command: String?
-    let docs: String?
-    let gliffInstalled: Bool?
 
     var desktopAvailability: DesktopAvailability? { desktopStatus.flatMap(DesktopAvailability.init(rawValue:)) }
 }

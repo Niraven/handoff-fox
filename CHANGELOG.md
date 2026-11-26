@@ -4,6 +4,10 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Removed
+
+- **Fields nothing read, and an icon generator nothing called.** `PeerReply` decoded `docs` and `gliffInstalled` on every reply and no view used either; `LinuxJob.createdAt` and three `CitadelActivity` flags were decoded and dropped on the floor; `script/DrawDesktopLinkIcon.swift` was a one-off generator that the asset and `sips` pipeline replaced. The four hand checks that need real hardware stay, now listed in `docs/DEVELOPMENT.md` instead of being invisible files in `script/`.
+
 ### Fixed
 
 - **Opening something on Linux is confirmed, not assumed.** A program that hands the work to the session now has 2.5 seconds to say it failed; a non-zero exit raises instead of recording a delivery, and a link whose opener failed leaves no receipt so it can be retried. A program that keeps running is still reported as dispatched.

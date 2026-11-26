@@ -59,6 +59,20 @@ For an optional agent integration, register this as a local stdio command with a
 uv run --with 'mcp>=2,<3' python /absolute/path/to/script/handoff-fox-jobs.py user@host mcp
 ```
 
+## Manual hardware checks
+
+Five programs under `script/` need a live Linux host and a real pasteboard, so CI does not build or run them. They are what produced the evidence lines in `docs/SUPPORT.md`, and they are the fastest way to re-record a cell after changing the transport, the transfer path, or pairing. Each takes a verified SSH alias and, where it needs one, an SSH config file.
+
+| Program | What it exercises |
+| --- | --- |
+| `PeerChecks.swift` | Address validation, a request round trip, and a receiver that speaks the wrong protocol |
+| `PairingChecks.swift` | An unknown host key, then a first pairing that installs the receiver |
+| `HandoffChecks.swift` | Send a file, read the receipt, and fetch it back with the same ticket |
+| `ClipboardChecks.swift` | Both clipboard directions through a unique pasteboard |
+| `AutomaticClipboardChecks.swift` | The watcher stream: a Linux copy arrives on the Mac and is not echoed back |
+
+Compile them the way `script/check_mac.sh` compiles its checks, replacing the checks file, and run the result with the arguments in each file's first `precondition`.
+
 ## What CI runs
 
 `script/check_mac.sh` builds the app on macOS. On Linux, unit discovery runs the receiver and CLI suites, the documentation-site tests, and `script/test_ssh_roundtrip.py`, which starts a local `sshd` and drives the exact remote command and install bootstrap the app uses. That transport test skips itself when it cannot start `sshd` or when a receiver is already installed in the home directory.
