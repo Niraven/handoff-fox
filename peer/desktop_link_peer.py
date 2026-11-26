@@ -137,7 +137,9 @@ def preset_argv(directory, argv):
         raise RequestError("The preset command must be an executable file inside the project.") from error
     if not S_ISREG(status.st_mode) or not status.st_mode & S_IXUSR:
         raise RequestError("The preset command must be an executable file inside the project.")
-    return argv
+    # A bare name would be looked up on PATH at run time, which can be a
+    # different program from the file just checked.
+    return [f"./{resolved.relative_to(directory).as_posix()}", *argv[1:]]
 
 
 def preset_artifact(artifact):

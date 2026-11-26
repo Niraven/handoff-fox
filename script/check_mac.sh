@@ -12,4 +12,7 @@ swiftc -parse-as-library "$source"/{FoxDesign,PeerClient,LinuxJobs,Handoff,Remot
 "$check_dir/connection"
 swiftc -parse-as-library "$source"/{Handoff,TransferInbox,ClipboardSync,ClipboardTransfer,PeerClient,LinuxJobs}.swift \
     script/TransferInboxChecks.swift -o "$check_dir/transfer"
+swiftc -parse-as-library "$source/PreferenceMigration.swift" \
+    script/PreferenceMigrationChecks.swift -o "$check_dir/preferences"
+"$check_dir/preferences"
 "$check_dir/transfer"

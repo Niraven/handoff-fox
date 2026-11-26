@@ -4,6 +4,13 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- **A saved preset can no longer run a different program than the one it checked.** `save-preset` verified `<project>/name` and stored `name`, which `exec` resolved through `PATH`. It now stores `./name`, so the file that was checked is the file that runs; a bare name from the Linux owner's own configuration keeps its old meaning.
+- **An upgrade keeps the viewer and the settings it had.** The viewer cache key now covers how the viewer is packaged rather than only which source it came from, so a warm `.build/mac-gliff` cannot hand the app a viewer with the old identifier, and the build refuses a bundled viewer whose identifier is wrong. The app also copies its preferences out of the previous bundle-identifier domain once, without overwriting anything already set.
+- **The preset contract is stated as it is.** `SECURITY.md` promised that arguments are never accepted from a request; `save-preset` does accept them, bounded to an executable already inside the project. The document now describes that, including what it does and does not protect against.
+- **Evidence links point at sections.** `docs/SUPPORT.md` cited `DEVELOPMENT.md:64` and similar line numbers that moved as soon as the document grew; they now link to headings.
+
 ## [0.1.2-preview.1] - 2026-11-26
 
 ### Added

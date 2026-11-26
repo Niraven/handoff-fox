@@ -66,6 +66,9 @@ PLIST
 helpers="$bundle/Contents/Helpers"
 mkdir -p "$helpers"
 /usr/bin/ditto --norsrc --noextattr "$viewer" "$helpers/Handoff Fox Desktop.app"
+/usr/bin/plutil -extract CFBundleIdentifier raw "$helpers/Handoff Fox Desktop.app/Contents/Info.plist" \
+    | grep -Fx "$identifier.viewer" >/dev/null \
+    || { echo "The bundled viewer has the wrong identifier. Remove .build/mac-gliff and rebuild." >&2; exit 1; }
 /usr/bin/codesign --force --sign - "$bundle"
 /usr/bin/codesign --verify --deep --strict "$bundle"
 if [[ "$mode" == --package ]]; then
