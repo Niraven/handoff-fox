@@ -39,6 +39,18 @@ field() {
     sed -n "s/.*\"$2\": \"\([^\"]*\)\".*/\1/p" <<<"$1" | head -1
 }
 
+count() {
+    # count JSON KEY -> how many entries the reply lists under KEY
+    python3 -c 'import json, sys
+try:
+    reply = json.loads(sys.argv[1])
+except ValueError:
+    print(0)
+else:
+    value = reply.get(sys.argv[2])
+    print(len(value) if isinstance(value, list) else 0)' "$1" "$2" 2>/dev/null || printf '0'
+}
+
 distro_id="$(release_value ID)"
 distro_name="$(release_value PRETTY_NAME)"
 distro_version="$(release_value VERSION_ID)"
@@ -72,8 +84,7 @@ fi
 
 pair_reply="$(request pair)"
 if printf '%s' "$pair_reply" | grep -q '"ok": true'; then
-    projects="$(printf '%s' "$pair_reply" | grep -o '"id":' | wc -l | tr -d ' ' || true)"
-    record "Pair: receiver answers" "pass" "${projects} saved project(s) reported"
+    record "Pair: receiver answers" "pass" "$(count "$pair_reply" projects) saved project(s) reported"
 else
     record "Pair: receiver answers" "fail" "$(clean "${pair_reply:-no reply}")"
 fi
@@ -97,8 +108,8 @@ esac
 for action in job-list agents; do
     reply="$(request "$action")"
     if printf '%s' "$reply" | grep -q '"ok": true'; then
-        count="$(printf '%s' "$reply" | grep -o '"id":\|"agent":' | wc -l | tr -d ' ' || true)"
-        record "Receiver action: $action" "pass" "${count} record(s) listed"
+        listed="$([ "$action" = agents ] && printf agents || printf jobs)"
+        record "Receiver action: $action" "pass" "$(count "$reply" "$listed") record(s) listed"
     else
         record "Receiver action: $action" "fail" "$(clean "${reply:-no reply}")"
     fi
