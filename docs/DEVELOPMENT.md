@@ -59,6 +59,10 @@ For an optional agent integration, register this as a local stdio command with a
 uv run --with 'mcp>=2,<3' python /absolute/path/to/script/handoff-fox-jobs.py user@host mcp
 ```
 
+## What CI runs
+
+`script/check_mac.sh` builds the app on macOS. On Linux, unit discovery runs the receiver and CLI suites, the documentation-site tests, and `script/test_ssh_roundtrip.py`, which starts a local `sshd` and drives the exact remote command and install bootstrap the app uses. That transport test skips itself when it cannot start `sshd` or when a receiver is already installed in the home directory.
+
 ## Preview verification
 
 - On Apple Silicon and Omarchy, the installed Mac app opened both a physical mirror and a separate virtual screen over Tailscale. The private screen accepted keyboard input with Shift and punctuation.

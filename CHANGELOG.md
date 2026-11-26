@@ -6,6 +6,7 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 
 ### Added
 
+- **An SSH transport test.** The receiver suites call the script directly, so nothing exercised the command the app actually runs over the network. `script/test_ssh_roundtrip.py` starts a local `sshd`, applies the app's own install bootstrap, and checks that the receiver answers on `.local/bin/desktop-link-peer`, that a missing receiver fails with the exit code the app treats as "install it", and that the bootstrap refuses a script whose hash does not match. CI installs `openssh-server` so it runs rather than skips.
 - **A distribution check** (`script/verify_distro.sh`) that runs the receiver over the same JSON interface the Mac uses and prints a report whose rows match the support matrix, with the Mac-side checklist underneath. It ships in the Linux scripts archive.
 
 ### Fixed
