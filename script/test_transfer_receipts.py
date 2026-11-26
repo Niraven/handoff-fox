@@ -138,6 +138,12 @@ class TransferReceiptTests(unittest.TestCase):
 
         link = self.invoke(["--queue", "link", "https://example.com/notes"], b"")["handoffs"][0]
         self.assertEqual(self.request("ack", link["id"])["acknowledged"], "dispatched")
+        self.assertEqual(self.request("ack", link["id"])["acknowledged"], "dispatched")
+
+        refused = self.queue(sample)
+        self.assertTrue(self.request("reject", refused["id"])["ok"])
+        self.assertEqual(self.request("ack", refused["id"])["acknowledged"], "rejected")
+        self.assertEqual(self.request("ack", refused["id"])["acknowledged"], "rejected")
 
         unknown = self.invoke([], json.dumps(
             {"version": 1, "action": "ack", "project": uuid.uuid4().hex}).encode())

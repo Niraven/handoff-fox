@@ -425,6 +425,8 @@ def acknowledge_handoff(token):
     receipts = transfer_receipts()
     queued = OUTBOX / f"{token}.json"
     receipt = receipts / f"mac-file-{token}.json"
+    dispatch = receipts / f"mac-dispatch-{token}.json"
+    rejection = receipts / f"mac-reject-{token}.json"
     with (receipts / "mac-files.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if queued.exists():
@@ -435,14 +437,25 @@ def acknowledge_handoff(token):
                                    key=lambda path: path.stat().st_mtime_ns, reverse=True)
                 for old in confirmed[100:]:
                     old.unlink(missing_ok=True)
+            else:
+                save_transfer_receipt(dispatch, {"dispatched": True})
+                dispatched = sorted(receipts.glob("mac-dispatch-*.json"),
+                                    key=lambda path: path.stat().st_mtime_ns, reverse=True)
+                for old in dispatched[100:]:
+                    old.unlink(missing_ok=True)
             queued.unlink(missing_ok=True)
             (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
             return {"acknowledged": "confirmed" if kind == "file" else "dispatched"}
         # A retry after a lost reply resolves to the record the first attempt
         # wrote instead of claiming a delivery that never happened.
-        if receipt.exists() or (receipts / f"mac-reject-{token}.json").exists():
-            (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
-            return {"acknowledged": "confirmed"}
+        for path, outcome in (
+            (receipt, "confirmed"),
+            (dispatch, "dispatched"),
+            (rejection, "rejected"),
+        ):
+            if path.exists():
+                (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
+                return {"acknowledged": outcome}
         raise RequestError("This handoff ticket is no longer known on Linux.")
 
 
