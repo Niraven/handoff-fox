@@ -19,9 +19,6 @@ struct InputStatus: Equatable, Sendable {
 }
 
 struct CitadelActivity: Decodable, Equatable, Sendable {
-    let scraperReady: Bool
-    let hermesActive: Bool
-    let herdrAgents: Int?
     let reviews: Int?
     let workspaceFreeGiB: Int?
 

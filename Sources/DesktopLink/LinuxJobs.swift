@@ -34,7 +34,6 @@ struct LinuxJob: Decodable, Identifiable, Equatable, Sendable {
     let preset: String
     let title: String
     let state: LinuxJobState
-    let createdAt: TimeInterval
     let updatedAt: TimeInterval
     let exitCode: Int?
     let elapsedMs: Int?

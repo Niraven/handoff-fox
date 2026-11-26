@@ -1292,7 +1292,7 @@ def watch_job(identifier, worker_fd, project_fd, supervisor_fd):
                         # cannot hand over the previous run's output.
                         (directory / "artifact.bin").unlink(missing_ok=True)
                         collected = {"artifactStale": True,
-                                     "artifactNote": "This run left the configured artifact untouched."}
+                                     "artifactError": "This run left the configured artifact untouched."}
                 fields.update(collected)
         except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError):
             fields["error"] = "The Linux job could not run. Check the configured executable and folder."

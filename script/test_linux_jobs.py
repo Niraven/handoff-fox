@@ -178,7 +178,7 @@ class DurableJobTests(unittest.TestCase):
         self.start(fresh)
         status = self.wait_terminal(fresh)["job"]
         self.assertFalse(status.get("artifactStale"), status)
-        self.assertIsNone(status.get("artifactNote"), status)
+        self.assertIsNone(status.get("artifactError"), status)
         self.assertEqual(status["artifactName"], "out.txt")
 
     def wait_for(self, identifier, predicate):
