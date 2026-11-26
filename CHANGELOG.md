@@ -7,16 +7,16 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 ### Fixed
 
 - **Opening something on Linux is confirmed, not assumed.** A program that hands the work to the session now has 2.5 seconds to say it failed; a non-zero exit raises instead of recording a delivery, and a link whose opener failed leaves no receipt so it can be retried. A program that keeps running is still reported as dispatched.
-- **A job artifact belongs to the run that produced it.** The receiver fingerprints the configured artifact before the run and marks the collected file `artifactStale` when the run left it untouched, so a successful no-op cannot return the previous run's output as fresh.
+- **A job artifact belongs to the run that produced it.** The receiver fingerprints the configured artifact before the run — time, size and inode — and when the run left it untouched it collects nothing and records `artifactStale`, so a save button cannot hand over the previous run's bytes.
 - **The distribution report carries no host details.** It names the distribution and session, and reports counts and messages rather than the host name, project paths, or job output, because the report is meant to be attached to an issue.
 - **The packaged app checks what it bundled.** The build refuses a bundle whose viewer lacks its licence notices or whose icon is missing, in addition to the identifier check.
 
 ### Fixed
 
-- **A job can no longer keep running behind a `failed` record.** The monitor records the process group it starts, and a supervisor that comes back from a dead monitor — or a job recovered after its worker vanished — kills that group and confirms it is gone before the record says `failed`. A recorded PID whose command no longer matches is left alone, so a reused PID cannot be killed by mistake.
-- **`ack` says what it did.** It answers `confirmed`, `dispatched`, or `rejected`, resolves a retry to the record the first attempt wrote, and refuses a ticket it no longer knows instead of reporting success for a delivery that never happened.
+- **A job no longer keeps running behind a `failed` record.** The monitor records the process group it starts and the kernel's start time for it, and a supervisor that comes back from a dead monitor — or a job recovered after its worker vanished — kills that group and confirms it is gone before the record says `failed`. The start time, not the command text, identifies the process: an earlier version compared `cmdline[0]`, which is the interpreter for any preset with a shebang, so the kill was skipped for every ordinary preset. A recycled PID is left alone.
+- **`ack` says what it did, once.** It answers `confirmed`, `dispatched`, or `rejected`, stores that terminal outcome per ticket so a replay returns the same answer, and refuses a ticket it never knew instead of reporting success for a delivery that never happened. A rejected ticket now acks as rejected rather than confirmed.
 - **A replay checks the file.** `upload-status` and a repeated upload re-hash the destination and report `verified`, rather than repeating a remembered path after the file was moved or changed.
-- **The outbox snapshot is taken under the lock** that acknowledge and reject use, so a concurrent acknowledgement can no longer make the whole `pending` request fail with a missing manifest.
+- **One lock covers the whole outbox.** Sweeping, listing, publishing, acknowledging and rejecting all take the same lock, so an acknowledgement can no longer make the `pending` request fail with a missing manifest. An earlier version took a second lock, which did not serialize anything.
 - **`scrape` gives up past its deadline** instead of letting a slow response outlive the 20 seconds the protocol documents.
 - **Cancel only applies to the device it was for.** A result arriving after the person switched devices no longer overwrites the new device's panel.
 - **The README states the status.** It calls the project an experimental preview, points at the support matrix, and links the release list rather than a stale tag.

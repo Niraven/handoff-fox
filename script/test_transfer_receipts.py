@@ -177,6 +177,18 @@ class TransferReceiptTests(unittest.TestCase):
         receipt = self.receipts / f"link-{ticket}.json"
         self.assertFalse(receipt.exists(), "a link that failed to open kept a delivery receipt")
 
+    def test_a_rejected_ticket_is_not_acknowledged_as_delivered(self):
+        sample = self.root / "pilot.txt"
+        sample.write_text("A file the Mac refused.")
+        queued = self.queue(sample)
+        self.assertTrue(self.request("reject", queued["id"])["ok"])
+        self.assertEqual(self.request("ack", queued["id"])["acknowledged"], "rejected")
+
+    def test_a_link_ack_replays_as_dispatched(self):
+        link = self.invoke(["--queue", "link", "https://example.com/notes"], b"")["handoffs"][0]
+        self.assertEqual(self.request("ack", link["id"])["acknowledged"], "dispatched")
+        self.assertEqual(self.request("ack", link["id"])["acknowledged"], "dispatched")
+
     def test_reject_is_idempotent_and_unblocks_the_queue(self):
         sample = self.root / "pilot.txt"
         sample.write_text("A file the Mac refuses.")

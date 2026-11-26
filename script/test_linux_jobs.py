@@ -121,25 +121,16 @@ class DurableJobTests(unittest.TestCase):
 
         directory = self.jobs / uuid.uuid4().hex
         directory.mkdir(parents=True)
-        orphan = subprocess.Popen(
-            ["bash", "-c", "exec -a marker-command sleep 30"],
-            start_new_session=True,
-        )
+        orphan = subprocess.Popen(["sleep", "30"], start_new_session=True)
         self.addCleanup(lambda: (orphan.poll() is None and orphan.kill(), orphan.wait()))
-        (directory / "worker.pid").write_text(json.dumps({"pid": 0, "command": "nothing"}))
+        started = peer.process_started_at(orphan.pid)
+        self.assertIsNotNone(started, "the kernel did not report a start time")
+        (directory / "worker.pid").write_text(
+            json.dumps({"pid": orphan.pid, "started": started}))
 
         job = {"id": directory.name, "project": "project", "preset": "test",
                "state": "running", "createdAt": time.time(), "updatedAt": time.time()}
         (directory / "job.json").write_text(json.dumps(job))
-        (directory / "worker.pid").write_text(json.dumps({"pid": orphan.pid, "command": "marker-command"}))
-        # exec replaces the shell in place, so wait for the command it becomes.
-        for _ in range(200):
-            try:
-                if open(f"/proc/{orphan.pid}/cmdline", "rb").read(64).startswith(b"marker-command"):
-                    break
-            except OSError:
-                pass
-            time.sleep(0.01)
 
         recovered = peer.recover_job(directory, job)
         self.assertEqual(recovered["state"], "failed")
@@ -159,7 +150,7 @@ class DurableJobTests(unittest.TestCase):
         while_we_wait = subprocess.Popen(["sleep", "30"], start_new_session=True)
         self.addCleanup(lambda: (while_we_wait.poll() is None and while_we_wait.kill(), while_we_wait.wait()))
         (directory / "worker.pid").write_text(
-            json.dumps({"pid": while_we_wait.pid, "command": "/some/other/program"}))
+            json.dumps({"pid": while_we_wait.pid, "started": "%d" % (int(peer.process_started_at(while_we_wait.pid) or 0) - 1)}))
         job = {"id": directory.name, "project": "project", "preset": "test",
                "state": "running", "createdAt": time.time(), "updatedAt": time.time()}
         (directory / "job.json").write_text(json.dumps(job))
@@ -175,7 +166,11 @@ class DurableJobTests(unittest.TestCase):
         self.configure("print('did nothing')", artifact="out.txt")
         identifier = uuid.uuid4().hex
         self.start(identifier)
-        self.assertTrue(self.wait_terminal(identifier)["job"].get("artifactStale"))
+        stale = self.wait_terminal(identifier)["job"]
+        self.assertTrue(stale.get("artifactStale"), stale)
+        self.assertNotIn("artifactSha256", stale, "a stale artifact was still collected")
+        artifact = self.invoke("job-artifact", job=identifier)
+        self.assertFalse(artifact["ok"], artifact)
 
         self.configure("import pathlib; pathlib.Path('out.txt').write_text('fresh')",
                       artifact="out.txt")
@@ -183,6 +178,7 @@ class DurableJobTests(unittest.TestCase):
         self.start(fresh)
         status = self.wait_terminal(fresh)["job"]
         self.assertFalse(status.get("artifactStale"), status)
+        self.assertIsNone(status.get("artifactNote"), status)
         self.assertEqual(status["artifactName"], "out.txt")
 
     def wait_for(self, identifier, predicate):

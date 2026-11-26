@@ -299,10 +299,11 @@ def sweep_outbox():
 
 def mailbox():
     OUTBOX.mkdir(parents=True, exist_ok=True, mode=0o700)
-    sweep_outbox()
-    # Acknowledging and rejecting delete manifests, so the listing and the
-    # reads happen under the same lock those changes take.
+    # Sweeping, listing and reading happen under the lock that publishing,
+    # acknowledging and rejecting also take, so a manifest cannot disappear
+    # between the listing and the read.
     with outbox_transaction():
+        sweep_outbox()
         queued = sorted(OUTBOX.glob("*.json"), key=lambda path: path.stat().st_mtime_ns)
         handoffs = []
         for path in queued:
@@ -436,28 +437,54 @@ def save_transfer_receipt(path, value):
             temporary.unlink(missing_ok=True)
 
 
+def remember_acknowledgment(receipts, token, outcome):
+    """Keep one terminal outcome per ticket so a lost reply replays the same one."""
+    save_transfer_receipt(receipts / f"ack-{token}.json", {"outcome": outcome})
+    stale = sorted(receipts.glob("ack-*.json"),
+                   key=lambda path: path.stat().st_mtime_ns, reverse=True)
+    for old in stale[100:]:
+        old.unlink(missing_ok=True)
+    return {"acknowledged": outcome}
+
+
 def acknowledge_handoff(token):
     receipts = transfer_receipts()
     queued = OUTBOX / f"{token}.json"
     receipt = receipts / f"mac-file-{token}.json"
-    with (receipts / "mac-files.lock").open("a") as lock:
+    acknowledged = receipts / f"ack-{token}.json"
+    with outbox_transaction(), (receipts / "mac-files.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        kind = None
         if queued.exists():
-            kind = json.loads(queued.read_text()).get("kind")
+            try:
+                kind = json.loads(queued.read_text()).get("kind")
+            except (OSError, ValueError):
+                kind = None
+            queued.unlink(missing_ok=True)
+            (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
             if kind == "file":
                 save_transfer_receipt(receipt, {"delivered": True})
                 confirmed = sorted(receipts.glob("mac-file-*.json"),
                                    key=lambda path: path.stat().st_mtime_ns, reverse=True)
                 for old in confirmed[100:]:
                     old.unlink(missing_ok=True)
-            queued.unlink(missing_ok=True)
-            (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
-            return {"acknowledged": "confirmed" if kind == "file" else "dispatched"}
+                return remember_acknowledgment(receipts, token, "confirmed")
+            if kind == "link":
+                return remember_acknowledgment(receipts, token, "dispatched")
+            queued = None
         # A retry after a lost reply resolves to the record the first attempt
-        # wrote instead of claiming a delivery that never happened.
-        if receipt.exists() or (receipts / f"mac-reject-{token}.json").exists():
-            (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
+        # wrote; a ticket that was rejected stays rejected.
+        if (receipts / f"mac-reject-{token}.json").exists():
+            return {"acknowledged": "rejected"}
+        if acknowledged.exists():
+            try:
+                return {"acknowledged": json.loads(acknowledged.read_text())["outcome"]}
+            except (OSError, ValueError, KeyError):
+                pass
+        if receipt.exists():
             return {"acknowledged": "confirmed"}
+        if (receipts / f"link-{token}.json").exists():
+            return {"acknowledged": "dispatched"}
         raise RequestError("This handoff ticket is no longer known on Linux.")
 
 
@@ -465,7 +492,7 @@ def reject_handoff(token):
     receipts = transfer_receipts()
     queued = OUTBOX / f"{token}.json"
     rejection = receipts / f"mac-reject-{token}.json"
-    with (receipts / "mac-files.lock").open("a") as lock:
+    with outbox_transaction(), (receipts / "mac-files.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not (queued.exists() or rejection.exists() or (receipts / f"mac-file-{token}.json").exists()):
             raise RequestError("This handoff ticket is unknown.")
@@ -929,11 +956,44 @@ def read_job(directory):
         raise RequestError("This job was not found on Linux.") from error
 
 
+def process_started_at(pid):
+    """The kernel's start time for a pid, which no later process can reuse."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            fields = handle.read(4096).rsplit(b")", 1)[1].split()
+    except (OSError, IndexError):
+        return None
+    try:
+        return fields[19].decode()
+    except IndexError:
+        return None
+
+
+def process_state(pid):
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            fields = handle.read(4096).rsplit(b")", 1)[1].split()
+        return fields[0].decode()
+    except (OSError, IndexError):
+        return None
+
+
+def worker_group_alive(pid):
+    """A killed group whose leader waits to be reaped is no longer running."""
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return process_state(pid) not in {None, "Z", "X"}
+
+
 def stop_recorded_worker(directory):
     """Kill the job process group a dead monitor left behind.
 
-    The record names the process group the monitor started and the command it
-    started it with, so a reused PID cannot make this kill something else.
+    The record holds the process group and the start time the kernel gave it,
+    so a pid recycled for another process is not signalled.
     """
     record = directory / "worker.pid"
     try:
@@ -942,17 +1002,11 @@ def stop_recorded_worker(directory):
         record.unlink(missing_ok=True)
         return False
     pid = saved.get("pid") if isinstance(saved, dict) else None
-    command = saved.get("command")
-    if not isinstance(pid, int) or pid <= 1 or not isinstance(command, str):
+    started = saved.get("started") if isinstance(saved, dict) else None
+    if not isinstance(pid, int) or pid <= 1 or not isinstance(started, str):
         record.unlink(missing_ok=True)
         return False
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as handle:
-            running = handle.read(4096).split(b"\x00")[0].decode(errors="replace")
-    except OSError:
-        record.unlink(missing_ok=True)
-        return False
-    if running != command:
+    if process_started_at(pid) != started:
         record.unlink(missing_ok=True)
         return False
     try:
@@ -961,14 +1015,14 @@ def stop_recorded_worker(directory):
         record.unlink(missing_ok=True)
         return False
     deadline_at = time.monotonic() + 5
+    stopped = False
     while time.monotonic() < deadline_at:
-        try:
-            os.killpg(pid, 0)
-        except ProcessLookupError:
+        if not worker_group_alive(pid):
+            stopped = True
             break
         time.sleep(0.05)
     record.unlink(missing_ok=True)
-    return True
+    return stopped
 
 
 def recover_job(directory, job):
@@ -1128,7 +1182,7 @@ def artifact_fingerprint(root, name):
         status = os.stat(root / Path(name))
     except OSError:
         return None
-    return [status.st_mtime_ns, status.st_size]
+    return [status.st_mtime_ns, status.st_size, status.st_ino]
 
 
 def save_job_artifact(directory, root, name):
@@ -1220,7 +1274,7 @@ def watch_job(identifier, worker_fd, project_fd, supervisor_fd):
                 pass_fds=(project_lock.fileno(),),
             ) as process:
                 atomic_job_file(directory / "worker.pid", json.dumps(
-                    {"pid": process.pid, "command": spec["argv"][0]}).encode())
+                    {"pid": process.pid, "started": process_started_at(process.pid)}).encode())
                 try:
                     code, truncated, error = collect_job_output(process, directory, supervisor)
                 finally:
@@ -1232,7 +1286,13 @@ def watch_job(identifier, worker_fd, project_fd, supervisor_fd):
                 collected = save_job_artifact(directory, Path(spec["cwd"]), spec.get("artifact"))
                 if "artifactSha256" in collected:
                     after = artifact_fingerprint(Path(spec["cwd"]), spec.get("artifact"))
-                    collected["artifactStale"] = artifact_before is not None and after == artifact_before
+                    stale = artifact_before is not None and after == artifact_before
+                    if stale:
+                        # Withholding the bytes is the only way a save button
+                        # cannot hand over the previous run's output.
+                        (directory / "artifact.bin").unlink(missing_ok=True)
+                        collected = {"artifactStale": True,
+                                     "artifactNote": "This run left the configured artifact untouched."}
                 fields.update(collected)
         except (OSError, TypeError, ValueError, KeyError, subprocess.SubprocessError):
             fields["error"] = "The Linux job could not run. Check the configured executable and folder."
