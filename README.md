@@ -4,7 +4,9 @@
 
 Keep your Linux workspace running while you work on your Mac. Click the fox in the menu bar to open the desktop, send a file or link, or jump back into a saved project.
 
-[Build from source](docs/SETUP.md) · [First preview release](https://github.com/Niraven/handoff-fox/releases/tag/v0.1.0-preview.1) · [Tell us what works on your setup](https://github.com/Niraven/handoff-fox/issues/new?template=preview-feedback.md)
+[Build from source](docs/SETUP.md) · [Preview releases](https://github.com/Niraven/handoff-fox/releases) · [Tell us what works on your setup](https://github.com/Niraven/handoff-fox/issues/new?template=preview-feedback.md)
+
+**Status: experimental preview.** There is no signed or notarized installer, the Mac app is ad-hoc signed only, and several failure paths are still being closed. [The support matrix](docs/SUPPORT.md) says what has actually been run and where — read the cells before trusting a workflow with real work.
 
 ![Handoff Fox menu bar popover with Open Desktop, Send and projects, and Clipboard controls](docs/images/mac-menu.png)
 

@@ -6,6 +6,16 @@ All notable changes to Handoff Fox are recorded here. The format follows [Keep a
 
 ### Fixed
 
+- **A job can no longer keep running behind a `failed` record.** The monitor records the process group it starts, and a supervisor that comes back from a dead monitor — or a job recovered after its worker vanished — kills that group and confirms it is gone before the record says `failed`. A recorded PID whose command no longer matches is left alone, so a reused PID cannot be killed by mistake.
+- **`ack` says what it did.** It answers `confirmed`, `dispatched`, or `rejected`, resolves a retry to the record the first attempt wrote, and refuses a ticket it no longer knows instead of reporting success for a delivery that never happened.
+- **A replay checks the file.** `upload-status` and a repeated upload re-hash the destination and report `verified`, rather than repeating a remembered path after the file was moved or changed.
+- **The outbox snapshot is taken under the lock** that acknowledge and reject use, so a concurrent acknowledgement can no longer make the whole `pending` request fail with a missing manifest.
+- **`scrape` gives up past its deadline** instead of letting a slow response outlive the 20 seconds the protocol documents.
+- **Cancel only applies to the device it was for.** A result arriving after the person switched devices no longer overwrites the new device's panel.
+- **The README states the status.** It calls the project an experimental preview, points at the support matrix, and links the release list rather than a stale tag.
+
+### Fixed
+
 - **A saved preset can no longer run a different program than the one it checked.** `save-preset` verified `<project>/name` and stored `name`, which `exec` resolved through `PATH`. It now stores `./name`, so the file that was checked is the file that runs; a bare name from the Linux owner's own configuration keeps its old meaning.
 - **An upgrade keeps the viewer and the settings it had.** The viewer cache key now covers how the viewer is packaged rather than only which source it came from, so a warm `.build/mac-gliff` cannot hand the app a viewer with the old identifier, and the build refuses a bundled viewer whose identifier is wrong. The app also copies its preferences out of the previous bundle-identifier domain once, without overwriting anything already set.
 - **The preset contract is stated as it is.** `SECURITY.md` promised that arguments are never accepted from a request; `save-preset` does accept them, bounded to an executable already inside the project. The document now describes that, including what it does and does not protect against.
