@@ -247,7 +247,7 @@ final class LinkController: NSObject, NSApplicationDelegate {
         let identifier = EventHotKeyID(signature: 0x48414E44, id: 1)
         let status = RegisterEventHotKey(UInt32(kVK_ANSI_J), UInt32(controlKey | optionKey),
                                        identifier, GetApplicationEventTarget(), 0, &hotkey)
-        Logger(subsystem: "local.desktoplink.control", category: "Handoff")
+        Logger(subsystem: "io.github.niraven.handofffox", category: "Handoff")
             .info("Handoff Control-Option-J registration status: \(status)")
     }
 

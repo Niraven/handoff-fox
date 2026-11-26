@@ -154,12 +154,12 @@ final class RemoteDesktop: ObservableObject {
     nonisolated private static func verifiedViewer() throws -> URL {
         let app = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Helpers/Handoff Fox Desktop.app", isDirectory: true)
-        guard Bundle(url: app)?.bundleIdentifier == "local.desktoplink.viewer" else {
+        guard Bundle(url: app)?.bundleIdentifier == "io.github.niraven.handofffox.viewer" else {
             throw PeerClient.Failure(reason: "The desktop viewer is missing. Reinstall Handoff Fox to restore it.")
         }
         var code: SecStaticCode?
         var requirement: SecRequirement?
-        let policy = #"identifier "local.desktoplink.viewer""#
+        let policy = #"identifier "io.github.niraven.handofffox.viewer""#
         guard SecStaticCodeCreateWithPath(app as CFURL, [], &code) == errSecSuccess,
               SecRequirementCreateWithString(policy as CFString, [], &requirement) == errSecSuccess,
               let code, let requirement,

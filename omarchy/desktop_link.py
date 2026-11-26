@@ -82,7 +82,7 @@ def open_shortcut(target):
         if not herdr:
             raise OSError("Herdr is not installed")
         if shutil.which("omarchy-launch-terminal") and shutil.which("foot"):
-            args = ("foot", "--app-id=local.desktoplink.herdr", "--title=Herdr", herdr)
+            args = ("foot", "--app-id=io.github.niraven.handofffox.herdr", "--title=Herdr", herdr)
         else:
             args = ("xdg-terminal-exec", herdr)
     else:
@@ -165,7 +165,7 @@ def open_panel(start_hidden, show_handoff=False):
     gi.require_version("GdkPixbuf", "2.0")
     from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk
 
-    app = Gtk.Application(application_id="local.desktoplink.control")
+    app = Gtk.Application(application_id="io.github.niraven.handofffox")
 
     def activate(application):
         if application.get_windows():
@@ -239,7 +239,7 @@ def open_panel(start_hidden, show_handoff=False):
                 )
             except GLib.Error:
                 pass
-        face = Gtk.Image.new_from_icon_name("local.desktoplink.control")
+        face = Gtk.Image.new_from_icon_name("io.github.niraven.handofffox")
         face.set_pixel_size(27)
         face.add_css_class("fox-face")
         emblem = Gtk.Overlay()
@@ -777,8 +777,8 @@ def main():
     group.add_argument("--handoff", action="store_true", help="open the handoff palette")
     args = parser.parse_args()
     if args.handoff:
-        action = command("gdbus", "call", "--session", "--dest", "local.desktoplink.control",
-                         "--object-path", "/local/desktoplink/control", "--method",
+        action = command("gdbus", "call", "--session", "--dest", "io.github.niraven.handofffox",
+                         "--object-path", "/io/github/niraven/handofffox", "--method",
                          "org.gtk.Actions.Activate", "handoff", "[]", "{}")
         if action.returncode == 0:
             return 0
