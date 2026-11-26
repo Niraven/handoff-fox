@@ -718,21 +718,32 @@ def clipboard_event(marker):
 
 
 def clipboard_stream():
-    copy, _, _, env = clipboard_tools()
+    copy, paste, formats, env = clipboard_tools()
     if copy[0] != "wl-copy":
         raise RequestError("Automatic text sharing requires a Wayland session.")
     with tempfile.TemporaryDirectory(prefix="handoff-fox-clip-") as temp:
         marker = Path(temp) / "ready"
-        watch = subprocess.Popen(["wl-paste", "--no-newline", "--watch", sys.executable,
+        initial = subprocess.run(formats, env=env, capture_output=True, timeout=3, check=False)
+        # A typed Wayland watcher receives no initial event for an image-only offer.
+        # Initialize the channel without reading that offer. Skip the first event as
+        # before when a text selection is already present or the clipboard is empty.
+        ready = initial.returncode == 0 and not any(
+            name.startswith(b"text/plain") or name == b"UTF8_STRING"
+            for name in initial.stdout.splitlines()
+        )
+        if ready:
+            marker.touch()
+        watch = subprocess.Popen([*paste, "--watch", sys.executable,
                                   os.path.realpath(__file__), "--clipboard-event", str(marker)],
                                  env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL)
         source, incoming = watch.stdout.fileno(), sys.stdin.fileno()
         buffers = {source: bytearray(), incoming: bytearray()}
-        ready = False
         echoes = deque(maxlen=8)
         expires = time.monotonic() + 28
         try:
+            if ready:
+                send_clipboard_frame("ready")
             while watch.poll() is None and time.monotonic() < expires:
                 available, _, _ = select.select([source, incoming], [], [], 1)
                 for fd in available:
