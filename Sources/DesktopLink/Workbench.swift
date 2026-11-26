@@ -540,13 +540,18 @@ final class WorkbenchModel: ObservableObject {
 
     func cancel(_ job: LinuxJob) async {
         guard let address = selected, supportsJobs else { return }
+        let revision = jobRevision
         do {
             let reply = try await Task.detached(priority: .userInitiated) {
                 try PeerClient.request(PeerRequest(action: "job-cancel", job: job.id), on: address)
             }.value
+            // The person can switch devices while this is in flight, and a
+            // result for another machine must not be shown as this one's.
+            guard selected == address, revision == jobRevision else { return }
             jobDetail = reply
             if let updated = reply.job { updateJob(updated) }
         } catch {
+            guard selected == address, revision == jobRevision else { return }
             self.error = error.localizedDescription
         }
     }

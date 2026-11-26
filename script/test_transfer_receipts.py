@@ -60,8 +60,10 @@ class TransferReceiptTests(unittest.TestCase):
         body = b"Build notes and artifacts"
         first = self.upload(ticket, body)
         self.assertTrue(first["ok"])
-        self.assertEqual(self.status(ticket, checksum(body)), first)
-        self.assertEqual(self.upload(ticket, body), first)
+        for replay in (self.status(ticket, checksum(body)), self.upload(ticket, body)):
+            self.assertEqual(replay["path"], first["path"])
+            self.assertEqual(replay["sha256"], first["sha256"])
+            self.assertTrue(replay["verified"], replay)
         self.assertEqual(list(self.folder.iterdir()), [Path(first["path"])])
         self.assertEqual(Path(first["path"]).read_bytes(), body)
         self.assertFalse(self.upload(ticket, b"Different payload")["ok"])
@@ -126,6 +128,37 @@ class TransferReceiptTests(unittest.TestCase):
         omitted = self.invoke(["--queue", "file", str(sample)], b"")["handoffs"][0]["id"]
         (self.root / "state/desktop-link/outbox" / f"{omitted}.json").unlink()
         self.assertEqual(request("mac-file-status", omitted)["transferStatus"], "unknown")
+
+    def test_acknowledgment_reports_what_actually_happened(self):
+        sample = self.root / "pilot.txt"
+        sample.write_text("A file for the Mac.")
+        queued = self.queue(sample)
+        self.assertEqual(self.request("ack", queued["id"])["acknowledged"], "confirmed")
+        self.assertEqual(self.request("ack", queued["id"])["acknowledged"], "confirmed")
+
+        link = self.invoke(["--queue", "link", "https://example.com/notes"], b"")["handoffs"][0]
+        self.assertEqual(self.request("ack", link["id"])["acknowledged"], "dispatched")
+
+        unknown = self.invoke([], json.dumps(
+            {"version": 1, "action": "ack", "project": uuid.uuid4().hex}).encode())
+        self.assertFalse(unknown["ok"], unknown)
+        self.assertIn("no longer known", unknown["error"])
+
+    def test_a_replay_checks_the_file_is_still_there(self):
+        ticket = uuid.uuid4().hex
+        body = b"Delivered exactly once"
+        first = self.upload(ticket, body)
+        self.assertTrue(self.status(ticket, checksum(body))["verified"])
+
+        Path(first["path"]).write_bytes(b"Delivered exactly 0nce")
+        tampered = self.status(ticket, checksum(body))
+        self.assertEqual(tampered["path"], first["path"])
+        self.assertFalse(tampered["verified"], tampered)
+
+        Path(first["path"]).unlink()
+        missing = self.status(ticket, checksum(body))
+        self.assertFalse(missing["verified"], missing)
+        self.assertEqual(self.upload(ticket, body)["verified"], False)
 
     def test_reject_is_idempotent_and_unblocks_the_queue(self):
         sample = self.root / "pilot.txt"
@@ -205,7 +238,9 @@ class TransferReceiptTests(unittest.TestCase):
         self.assertEqual(Path(retry["path"]).read_bytes(), body)
         self.assertEqual(planned.read_bytes(), b"Someone else's shorter file")
         self.assertEqual(json.loads(manifest.read_text())["path"], retry["path"])
-        self.assertEqual(self.status(ticket, checksum(body))["path"], retry["path"])
+        replay = self.status(ticket, checksum(body))
+        self.assertEqual(replay["path"], retry["path"])
+        self.assertTrue(replay["verified"], replay)
 
     def test_interrupted_commit_reports_a_foreign_file_at_its_recorded_path(self):
         self.upload(uuid.uuid4().hex, b"First file")

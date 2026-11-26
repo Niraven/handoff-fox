@@ -56,6 +56,8 @@ struct PeerReply: Decodable, Sendable {
     let handoffs: [HandoffItem]?
     let path: String?
     let sha256: String?
+    /// Present when the receiver re-checked a file it had already delivered.
+    let verified: Bool?
     let desktopOutput: String?
     let desktopStatus: String?
     let clipboardAvailable: Bool?

@@ -285,7 +285,17 @@ def sweep_outbox():
 def mailbox():
     OUTBOX.mkdir(parents=True, exist_ok=True, mode=0o700)
     sweep_outbox()
-    return sorted(OUTBOX.glob("*.json"), key=lambda path: path.stat().st_mtime_ns)
+    # Acknowledging and rejecting delete manifests, so the listing and the
+    # reads happen under the same lock those changes take.
+    with outbox_transaction():
+        queued = sorted(OUTBOX.glob("*.json"), key=lambda path: path.stat().st_mtime_ns)
+        handoffs = []
+        for path in queued:
+            try:
+                handoffs.append(json.loads(path.read_text()))
+            except (OSError, ValueError):
+                continue
+        return handoffs
 
 
 @contextmanager
@@ -325,7 +335,10 @@ def publish_handoff(item, partial):
     temporary = OUTBOX / f"{item['id']}.json.part"
     try:
         with outbox_transaction():
-            if len(mailbox()) >= 12:
+            # The lock is already held here, so sweep and count directly
+            # rather than through mailbox(), which takes it again.
+            sweep_outbox()
+            if len(list(OUTBOX.glob("*.json"))) >= 12:
                 raise RequestError("There are 12 transfers waiting for your Mac.")
             if partial.exists():
                 os.replace(partial, OUTBOX / f"{item['id']}.bin")
@@ -411,16 +424,26 @@ def save_transfer_receipt(path, value):
 def acknowledge_handoff(token):
     receipts = transfer_receipts()
     queued = OUTBOX / f"{token}.json"
+    receipt = receipts / f"mac-file-{token}.json"
     with (receipts / "mac-files.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if queued.exists() and json.loads(queued.read_text()).get("kind") == "file":
-            save_transfer_receipt(receipts / f"mac-file-{token}.json", {"delivered": True})
-            confirmed = sorted(receipts.glob("mac-file-*.json"),
-                               key=lambda path: path.stat().st_mtime_ns, reverse=True)
-            for old in confirmed[100:]:
-                old.unlink(missing_ok=True)
-        queued.unlink(missing_ok=True)
-        (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
+        if queued.exists():
+            kind = json.loads(queued.read_text()).get("kind")
+            if kind == "file":
+                save_transfer_receipt(receipt, {"delivered": True})
+                confirmed = sorted(receipts.glob("mac-file-*.json"),
+                                   key=lambda path: path.stat().st_mtime_ns, reverse=True)
+                for old in confirmed[100:]:
+                    old.unlink(missing_ok=True)
+            queued.unlink(missing_ok=True)
+            (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
+            return {"acknowledged": "confirmed" if kind == "file" else "dispatched"}
+        # A retry after a lost reply resolves to the record the first attempt
+        # wrote instead of claiming a delivery that never happened.
+        if receipt.exists() or (receipts / f"mac-reject-{token}.json").exists():
+            (OUTBOX / f"{token}.bin").unlink(missing_ok=True)
+            return {"acknowledged": "confirmed"}
+        raise RequestError("This handoff ticket is no longer known on Linux.")
 
 
 def reject_handoff(token):
@@ -467,7 +490,7 @@ def commit_upload(folder, staged, token, name, volume, size, digest):
             if destination not in {folder / name, collision}:
                 raise RequestError("The destination for this transfer has changed.")
             if state.get("delivered"):
-                return {"path": str(destination), "sha256": digest}
+                return delivered_reply(state, digest)
         else:
             destination = folder / name
             if os.path.lexists(destination):
@@ -548,6 +571,28 @@ def reveal_upload(ticket):
     return {}
 
 
+def recorded_digest(path):
+    digest = sha256()
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as handle:
+        while chunk := handle.read(262_144):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def delivered_reply(state, digest):
+    destination = Path(state["path"])
+    verified = False
+    try:
+        status = os.lstat(destination)
+        verified = (S_ISREG(status.st_mode)
+                    and status.st_size == state["manifest"]["size"]
+                    and recorded_digest(destination) == digest)
+    except (OSError, ValueError):
+        verified = False
+    return {"path": str(destination), "sha256": digest, "verified": verified}
+
+
 def upload_status(ticket, digest):
     token = ticket_id(ticket)
     path = transfer_receipts() / f"file-{token}.json"
@@ -558,7 +603,7 @@ def upload_status(ticket, digest):
         raise RequestError("This transfer ticket belongs to a different file.")
     if not state.get("delivered"):
         return {}
-    return {"path": state["path"], "sha256": digest}
+    return delivered_reply(state, digest)
 
 
 def graphical_environment():
@@ -869,6 +914,48 @@ def read_job(directory):
         raise RequestError("This job was not found on Linux.") from error
 
 
+def stop_recorded_worker(directory):
+    """Kill the job process group a dead monitor left behind.
+
+    The record names the process group the monitor started and the command it
+    started it with, so a reused PID cannot make this kill something else.
+    """
+    record = directory / "worker.pid"
+    try:
+        saved = json.loads(record.read_text())
+    except (OSError, ValueError):
+        record.unlink(missing_ok=True)
+        return False
+    pid = saved.get("pid") if isinstance(saved, dict) else None
+    command = saved.get("command")
+    if not isinstance(pid, int) or pid <= 1 or not isinstance(command, str):
+        record.unlink(missing_ok=True)
+        return False
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            running = handle.read(4096).split(b"\x00")[0].decode(errors="replace")
+    except OSError:
+        record.unlink(missing_ok=True)
+        return False
+    if running != command:
+        record.unlink(missing_ok=True)
+        return False
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        record.unlink(missing_ok=True)
+        return False
+    deadline_at = time.monotonic() + 5
+    while time.monotonic() < deadline_at:
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    record.unlink(missing_ok=True)
+    return True
+
+
 def recover_job(directory, job):
     if job["state"] not in ACTIVE_JOB_STATES:
         return job
@@ -877,7 +964,10 @@ def recover_job(directory, job):
             fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return job
-        return write_job(directory, job, state="failed", error="The Linux job worker stopped.")
+        stopped = stop_recorded_worker(directory)
+        reason = ("The Linux job monitor stopped, so the job was killed to release the project."
+                  if stopped else "The Linux job worker stopped.")
+        return write_job(directory, job, state="failed", error=reason)
 
 
 def project_build_lock(project_id):
@@ -1056,6 +1146,17 @@ def run_job(identifier, worker_fd, project_fd):
             stdin=sys.stdin, start_new_session=True, pass_fds=(worker_fd, project_fd, read_end),
         ) as monitor:
             monitor.wait()
+    directory = JOBS / identifier
+    try:
+        job = read_job(directory)
+    except RequestError:
+        return
+    if job["state"] not in ACTIVE_JOB_STATES:
+        return
+    stopped = stop_recorded_worker(directory)
+    write_job(directory, job, state="failed",
+              error=("The Linux job monitor stopped, so the job was killed to release the project."
+                     if stopped else "The Linux job monitor stopped."))
 
 
 def watch_job(identifier, worker_fd, project_fd, supervisor_fd):
@@ -1091,7 +1192,12 @@ def watch_job(identifier, worker_fd, project_fd, supervisor_fd):
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
                 pass_fds=(project_lock.fileno(),),
             ) as process:
-                code, truncated, error = collect_job_output(process, directory, supervisor)
+                atomic_job_file(directory / "worker.pid", json.dumps(
+                    {"pid": process.pid, "command": spec["argv"][0]}).encode())
+                try:
+                    code, truncated, error = collect_job_output(process, directory, supervisor)
+                finally:
+                    (directory / "worker.pid").unlink(missing_ok=True)
             fields.update(exitCode=code, truncated=truncated)
             if error:
                 fields["error"] = error
@@ -1244,6 +1350,8 @@ def scrape(url):
             if response.getheader("Content-Encoding", "identity").lower() != "identity":
                 raise RequestError("The website returned an unsupported text encoding.")
             raw = response.read(MAX_PAGE + 1)
+            if time.monotonic() > deadline_at:
+                raise RequestError("The Linux action took too long to respond.")
             page = raw[:MAX_PAGE].decode(response.headers.get_content_charset() or "utf-8", errors="replace")
         finally:
             connection.close()
@@ -1385,11 +1493,10 @@ def request(payload):
         while True:
             queued = mailbox()
             if queued or time.monotonic() >= deadline_at:
-                return {"handoffs": [json.loads(path.read_text()) for path in queued]}
+                return {"handoffs": queued}
             time.sleep(0.5)
     if action == "ack":
-        acknowledge_handoff(ticket_id(payload.get("project")))
-        return {}
+        return acknowledge_handoff(ticket_id(payload.get("project")))
     if action == "reject":
         return reject_handoff(ticket_id(payload.get("project")))
     if action == "agents":

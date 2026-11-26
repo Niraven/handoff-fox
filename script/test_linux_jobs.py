@@ -113,6 +113,62 @@ class DurableJobTests(unittest.TestCase):
         self.wait_terminal(identifier)
         self.assertTrue((self.project / "owner.txt").exists())
 
+    def test_recovery_kills_what_a_dead_monitor_left_running(self):
+        spec = importlib.util.spec_from_file_location("test_fox_peer", PEER)
+        peer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(peer)
+        peer.CONFIG, peer.JOBS = self.config, self.jobs
+
+        directory = self.jobs / uuid.uuid4().hex
+        directory.mkdir(parents=True)
+        orphan = subprocess.Popen(
+            ["bash", "-c", "exec -a marker-command sleep 30"],
+            start_new_session=True,
+        )
+        self.addCleanup(lambda: (orphan.poll() is None and orphan.kill(), orphan.wait()))
+        (directory / "worker.pid").write_text(json.dumps({"pid": 0, "command": "nothing"}))
+
+        job = {"id": directory.name, "project": "project", "preset": "test",
+               "state": "running", "createdAt": time.time(), "updatedAt": time.time()}
+        (directory / "job.json").write_text(json.dumps(job))
+        (directory / "worker.pid").write_text(json.dumps({"pid": orphan.pid, "command": "marker-command"}))
+        # exec replaces the shell in place, so wait for the command it becomes.
+        for _ in range(200):
+            try:
+                if open(f"/proc/{orphan.pid}/cmdline", "rb").read(64).startswith(b"marker-command"):
+                    break
+            except OSError:
+                pass
+            time.sleep(0.01)
+
+        recovered = peer.recover_job(directory, job)
+        self.assertEqual(recovered["state"], "failed")
+        self.assertIn("killed", recovered["error"])
+        orphan.wait(timeout=10)
+        self.assertIsNotNone(orphan.returncode, "the orphaned command was still running")
+        self.assertFalse((directory / "worker.pid").exists())
+
+    def test_recovery_leaves_a_reused_pid_alone(self):
+        spec = importlib.util.spec_from_file_location("test_fox_peer", PEER)
+        peer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(peer)
+        peer.CONFIG, peer.JOBS = self.config, self.jobs
+
+        directory = self.jobs / uuid.uuid4().hex
+        directory.mkdir(parents=True)
+        while_we_wait = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        self.addCleanup(lambda: (while_we_wait.poll() is None and while_we_wait.kill(), while_we_wait.wait()))
+        (directory / "worker.pid").write_text(
+            json.dumps({"pid": while_we_wait.pid, "command": "/some/other/program"}))
+        job = {"id": directory.name, "project": "project", "preset": "test",
+               "state": "running", "createdAt": time.time(), "updatedAt": time.time()}
+        (directory / "job.json").write_text(json.dumps(job))
+
+        recovered = peer.recover_job(directory, job)
+        self.assertEqual(recovered["state"], "failed")
+        self.assertNotIn("killed", recovered["error"])
+        self.assertIsNone(while_we_wait.poll(), "an unrelated process was killed")
+
     def wait_for(self, identifier, predicate):
         stop = time.monotonic() + 7
         while time.monotonic() < stop:

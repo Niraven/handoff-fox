@@ -72,7 +72,14 @@ enum FileHandoff {
         } catch let error as PeerClient.Failure where error.reason == "Unknown Handoff Fox action." {
             throw failure("Update the Linux receiver to retry this transfer.")
         }
-        if let path = previous.path, previous.sha256 == sha256 { return path }
+        if let path = previous.path, previous.sha256 == sha256 {
+            // A receiver that re-checked the file says whether it is still
+            // there. Older receivers omit the field, and their word stands.
+            if previous.verified == false {
+                throw failure("That file was delivered earlier, but it is no longer at \(path).")
+            }
+            return path
+        }
         return try upload(file, named: name, on: address, volume: volume,
                           ticket: ticket, expected: sha256, sshConfig: sshConfig)
     }
