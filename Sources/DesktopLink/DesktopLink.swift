@@ -56,6 +56,7 @@ final class LinkModel: ObservableObject {
 @MainActor
 enum DesktopLink {
     static func main() {
+        PreferenceMigration.run()
         let controller = LinkController()
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)

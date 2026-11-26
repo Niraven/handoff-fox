@@ -84,6 +84,35 @@ class DurableJobTests(unittest.TestCase):
         self.addCleanup(self.cancel_if_running, identifier)
         return supervisor
 
+    def test_a_saved_bare_command_runs_the_project_file(self):
+        project_tool = self.project / "fox-check"
+        project_tool.write_text("#!/bin/sh\necho project > ran.txt\n")
+        project_tool.chmod(0o755)
+        elsewhere = self.root / "bin"
+        elsewhere.mkdir()
+        path_tool = elsewhere / "fox-check"
+        path_tool.write_text("#!/bin/sh\necho path > ran.txt\n")
+        path_tool.chmod(0o755)
+        self.env["PATH"] = str(elsewhere) + os.pathsep + os.environ.get("PATH", "")
+        self.configure("print('unused')")
+        saved = self.invoke("save-preset", project="project", name="Check", argv=["fox-check"])
+        self.assertTrue(saved["ok"], saved)
+        presets = json.loads(self.config.read_text())["projects"][0]["presets"]
+        saved_preset = next(entry for entry in presets if entry["id"] == "check")
+        self.assertEqual(saved_preset["argv"], ["./fox-check"])
+
+        identifier = uuid.uuid4().hex
+        self.request("job-start", project="project", preset="check", job=identifier)
+        self.wait_terminal(identifier)
+        self.assertEqual((self.project / "ran.txt").read_text().strip(), "project")
+
+    def test_an_owner_command_outside_the_project_still_runs(self):
+        self.configure("import pathlib; pathlib.Path('owner.txt').touch()")
+        identifier = uuid.uuid4().hex
+        self.start(identifier)
+        self.wait_terminal(identifier)
+        self.assertTrue((self.project / "owner.txt").exists())
+
     def wait_for(self, identifier, predicate):
         stop = time.monotonic() + 7
         while time.monotonic() < stop:
